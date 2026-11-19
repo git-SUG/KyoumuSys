@@ -23,6 +23,11 @@ Private Const FIRST_ROW As Long = 13              ' 転記先の先頭行
 Private Const SRC_FIRST_ROW As Long = 3           ' 月シートで「1日」がある行
 Private Const TIDY_SCHEDULE As Boolean = True     ' 今後の予定欄(D11)で行事のない日を省く
 Private Const NAME_SRC_PATH As String = "週報作成_行事予定パス"
+Private Const NAME_PENDING As String = "週報作成_予約"      ' 後半の処理に渡す週番号・開始日
+Private Const NAME_NOTE As String = "週報作成_注記"         ' 完了メッセージに添える注記
+
+Private quietMode As Boolean     ' テスト用：True のときメッセージを出さない
+Private lastMessage As String
 
 '===============================================================================
 ' メイン：週番号を聞いて週報シートを作る
@@ -47,16 +52,78 @@ Public Sub 週報作成()
     Dim startDate As Date, note As String
     If Not AskStartDate(weekNo, startDate, note) Then Exit Sub
 
-    ' 3) 行事予定ブックを用意して書き込む
-    Dim wbSrc As Workbook, openedHere As Boolean
-    Set wbSrc = GetSourceWorkbook(openedHere)
-    If wbSrc Is Nothing Then Exit Sub
+    ' 3) 行事予定ブックがすでに開いていれば、そのまま作る
+    Dim wbSrc As Workbook
+    Set wbSrc = FindOpenSource()
+    If Not wbSrc Is Nothing Then
+        FinishReport wbSrc, weekNo, startDate, note, False
+        Exit Sub
+    End If
 
+    ' 4) 開いていなければファイルを開く
+    '    Ctrl+Shift のショートカットで実行すると、Excel はファイルを開いた直後に
+    '    マクロを止めてしまうことがある。そこで、続きの処理（ContinueWeeklyReport）を
+    '    先に予約してから開く。止まっても止まらなくても、続きは予約から1回だけ動く。
+    Dim path As String
+    path = ChooseSourcePath()
+    If path = "" Then Exit Sub
+    SaveSourcePath path
+    SaveText NAME_PENDING, weekNo & "|" & CLng(startDate)
+    SaveText NAME_NOTE, Replace(note, vbLf, "\n")
+    Application.OnTime Now, "'" & ThisWorkbook.Name & "'!ContinueWeeklyReport"
+    Application.ScreenUpdating = False
+    Workbooks.Open Filename:=path, UpdateLinks:=0, ReadOnly:=True
+End Sub
+
+' 後半：開いた行事予定ブックから週報を作る（週報作成 から予約して呼ばれる）
+Public Sub ContinueWeeklyReport()
+    Dim s As String, p As Variant
+    s = LoadText(NAME_PENDING)
+    If s = "" Then Exit Sub                  ' 予約がなければ何もしない
+    SaveText NAME_PENDING, ""
+    p = Split(s, "|")
+    If UBound(p) < 1 Then Exit Sub
+
+    Dim weekNo As Long, startDate As Date, note As String, path As String
+    weekNo = CLng(p(0))
+    startDate = CDate(CLng(p(1)))
+    note = Replace(LoadText(NAME_NOTE), "\n", vbLf)
+    SaveText NAME_NOTE, ""
+    path = LoadSavedPath()
+
+    Dim wb As Workbook, wbSrc As Workbook
+    For Each wb In Application.Workbooks
+        If StrComp(wb.FullName, path, vbTextCompare) = 0 Then Set wbSrc = wb
+    Next wb
+    Application.ScreenUpdating = True
+    If wbSrc Is Nothing Then
+        ShowMessage "行事予定ブックを開けませんでした。" & vbLf & path, vbExclamation
+        SaveSourcePath ""
+        Exit Sub
+    End If
+    If Not IsSourceWorkbook(wbSrc) Then
+        ShowMessage "選んだファイルに「４月」～「３月」のシートが見つかりません。" & vbLf & wbSrc.Name, vbExclamation
+        wbSrc.Close SaveChanges:=False
+        SaveSourcePath ""
+        Exit Sub
+    End If
+    FinishReport wbSrc, weekNo, startDate, note, True
+End Sub
+
+Private Sub FinishReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, ByVal startDate As Date, _
+                         ByVal note As String, ByVal closeSrc As Boolean)
+    ThisWorkbook.Activate
     Dim msg As String
     msg = MakeWeeklyReport(wbSrc, weekNo, startDate, True)
+    If closeSrc Then wbSrc.Close SaveChanges:=False
+    ThisWorkbook.Activate
+    Application.ScreenUpdating = True
+    If msg <> "" Then ShowMessage msg & note, vbInformation
+End Sub
 
-    If openedHere Then wbSrc.Close SaveChanges:=False
-    If msg <> "" Then MsgBox msg & note, vbInformation, "週報作成"
+Private Sub ShowMessage(ByVal msg As String, ByVal style As Long)
+    lastMessage = msg
+    If Not quietMode Then MsgBox msg, style, "週報作成"
 End Sub
 
 ' 開始日を前の週から計算して表示し、訂正を受け付ける
@@ -257,19 +324,21 @@ Private Function WeekdayChar(ByVal d As Date) As String
     WeekdayChar = Mid("日月火水木金土", Weekday(d, vbSunday), 1)
 End Function
 
-' 行事予定ブックを探す：開いていればそれを使い、なければ前回のパス→ファイル選択
-Private Function GetSourceWorkbook(ByRef openedHere As Boolean) As Workbook
+' 開いているブックの中から行事予定ブックを探す
+Private Function FindOpenSource() As Workbook
     Dim wb As Workbook
-    openedHere = False
     For Each wb In Application.Workbooks
         If Not wb Is ThisWorkbook Then
             If IsSourceWorkbook(wb) Then
-                Set GetSourceWorkbook = wb
+                Set FindOpenSource = wb
                 Exit Function
             End If
         End If
     Next wb
+End Function
 
+' 行事予定ファイルの場所：前回のパス（ファイルが残っていれば）→ なければ選んでもらう
+Private Function ChooseSourcePath() As String
     Dim path As String
     path = LoadSavedPath()
     If path <> "" Then
@@ -282,20 +351,7 @@ Private Function GetSourceWorkbook(ByRef openedHere As Boolean) As Workbook
         If VarType(f) = vbBoolean Then Exit Function
         path = CStr(f)
     End If
-
-    Application.ScreenUpdating = False
-    Set wb = Workbooks.Open(Filename:=path, UpdateLinks:=0, ReadOnly:=True)
-    ThisWorkbook.Activate
-    If Not IsSourceWorkbook(wb) Then
-        MsgBox "選んだファイルに「４月」～「３月」のシートが見つかりません。" & vbLf & wb.Name, _
-               vbExclamation, "週報作成"
-        wb.Close SaveChanges:=False
-        SaveSourcePath ""
-        Exit Function
-    End If
-    SaveSourcePath path
-    openedHere = True
-    Set GetSourceWorkbook = wb
+    ChooseSourcePath = path
 End Function
 
 Private Function IsSourceWorkbook(ByVal wb As Workbook) As Boolean
@@ -380,21 +436,30 @@ Private Sub KeepOutsideSpaces(ByVal ws As Worksheet)
 End Sub
 
 Private Function LoadSavedPath() As String
-    On Error Resume Next
-    Dim s As String
-    s = ThisWorkbook.Names(NAME_SRC_PATH).RefersTo
-    If Err.Number <> 0 Then Exit Function
-    On Error GoTo 0
-    ' RefersTo は ="C:\..." の形
-    If Left$(s, 2) = "=""" Then s = Mid$(s, 3, Len(s) - 3)
-    LoadSavedPath = Replace(s, """""", """")
+    LoadSavedPath = LoadText(NAME_SRC_PATH)
 End Function
 
 Private Sub SaveSourcePath(ByVal path As String)
-    On Error Resume Next
-    ThisWorkbook.Names(NAME_SRC_PATH).Delete
-    On Error GoTo 0
-    If path = "" Then Exit Sub
-    ThisWorkbook.Names.Add Name:=NAME_SRC_PATH, _
-        RefersTo:="=""" & Replace(path, """", """""") & """", Visible:=False
+    SaveText NAME_SRC_PATH, path
 End Sub
+
+' ブックの非表示の「名前」に文字列を保存する（空文字なら削除）
+Private Sub SaveText(ByVal key As String, ByVal value As String)
+    On Error Resume Next
+    ThisWorkbook.Names(key).Delete
+    On Error GoTo 0
+    If value = "" Then Exit Sub
+    ThisWorkbook.Names.Add Name:=key, _
+        RefersTo:="=""" & Replace(value, """", """""") & """", Visible:=False
+End Sub
+
+Private Function LoadText(ByVal key As String) As String
+    Dim s As String
+    On Error Resume Next
+    s = ThisWorkbook.Names(key).RefersTo
+    If Err.Number <> 0 Then Exit Function
+    On Error GoTo 0
+    ' RefersTo は ="..." の形
+    If Left$(s, 2) = "=""" Then s = Mid$(s, 3, Len(s) - 3)
+    LoadText = Replace(s, """""", """")
+End Function

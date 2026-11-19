@@ -24,6 +24,9 @@ Private Const TIDY_SCHEDULE As Boolean = True     ' 今後の予定欄(D11)で�
 Private Const NAME_SRC_PATH As String = "週報作成_行事予定パス"
 Private Const NAME_PENDING As String = "週報作成_予約"      ' 後半の処理に渡す週番号・開始日
 Private Const NAME_NOTE As String = "週報作成_注記"         ' 完了メッセージに添える注記
+Private Const MAX_ROW_HEIGHT As Double = 409          ' Excel の行の高さの上限（ポイント）
+Private Const MIN_FONT_SIZE As Double = 6            ' 縮小するときのフォントの下限
+Private Const HEIGHT_MARGIN As Double = 1.1          ' 測った高さに持たせる余裕（画面と印刷の差の分）
 
 Private quietMode As Boolean     ' テスト用：True のときメッセージを出さない
 Private lastMessage As String
@@ -237,6 +240,7 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
 
     If TIDY_SCHEDULE Then TidyScheduleFormulas ws
     KeepOutsideSpaces ws
+    FitRowHeights ws
 
     Application.ScreenUpdating = True
     ws.Activate
@@ -433,6 +437,101 @@ Private Sub KeepOutsideSpaces(ByVal ws As Worksheet)
             "&CHAR(10))&IF(J" & (4 + i) & "="""","""",J" & (4 + i) & ")"
     Next i
 End Sub
+
+' 手で書き足したあとに、表示中の週シートの行の高さだけを調整し直す
+Public Sub 行の高さ調整()
+    If Not IsNumeric(ActiveSheet.Name) Then
+        MsgBox "週のシート（名前が番号のシート）を表示してから実行してください。", vbExclamation, "週報作成"
+        Exit Sub
+    End If
+    Application.ScreenUpdating = False
+    FitRowHeights ActiveSheet
+    Application.ScreenUpdating = True
+End Sub
+
+' C4:E8（A・B 列も含む）と D11 の内容がすべて見えるように行の高さを調整する。
+'   ・行の高さ＝その行のセルが全部表示できる高さの最大値（原本の高さより低くはしない）
+'   ・上限 409 ポイントでも入りきらないセルは、フォントを 0.5 ずつ小さくする
+Private Sub FitRowHeights(ByVal ws As Worksheet)
+    Dim wsGen As Worksheet, tmp As Worksheet, r As Long
+    Set wsGen = FindSheet(ThisWorkbook, SHEET_GENPON)
+    Application.Calculate                ' 書き込んだデータで数式を計算し終えてから測る
+
+    ' 高さを測るための一時シート（最後に削除）
+    Set tmp = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    For r = 4 To 8
+        FitOneRow ws, wsGen, tmp, r, Array("A", "B", "C", "D", "E")
+    Next r
+    FitOneRow ws, wsGen, tmp, 11, Array("D")
+
+    Application.DisplayAlerts = False
+    tmp.Delete
+    Application.DisplayAlerts = True
+    ws.Activate
+End Sub
+
+Private Sub FitOneRow(ByVal ws As Worksheet, ByVal wsGen As Worksheet, ByVal tmp As Worksheet, _
+                      ByVal r As Long, ByVal cols As Variant)
+    Dim need As Double, h As Double, c As Variant
+    If wsGen Is Nothing Then need = ws.Rows(r).RowHeight Else need = wsGen.Rows(r).RowHeight
+    For Each c In cols
+        h = FitOneCell(ws.Range(c & r), wsGen, tmp)
+        If h > need Then need = h
+    Next c
+    If need > MAX_ROW_HEIGHT Then need = MAX_ROW_HEIGHT
+    ws.Rows(r).RowHeight = need
+End Sub
+
+' セル（結合セルなら結合範囲全体）を全部表示するのに必要な高さを返す。
+' 上限を超えるときはフォントを小さくして収める。
+Private Function FitOneCell(ByVal cell As Range, ByVal wsGen As Worksheet, ByVal tmp As Worksheet) As Double
+    Dim area As Range, topCell As Range, v As Variant, txt As String
+    Set area = cell.MergeArea
+    Set topCell = area.Cells(1, 1)
+
+    ' フォントサイズは原本のサイズから測り直す（作り直したときに小さいままにならないように）
+    Dim size As Double
+    size = topCell.Font.Size
+    If Not wsGen Is Nothing Then size = wsGen.Range(topCell.Address).Font.Size
+    If area.Font.Size <> size Then area.Font.Size = size
+
+    v = topCell.Value
+    If IsError(v) Then Exit Function
+    txt = CStr(v)
+    If txt = "" Then Exit Function
+
+    ' 一時シートの A1 を同じ幅・同じフォントにして、行の高さを自動調整して測る
+    Dim w As Double, i As Long
+    For i = 1 To area.Columns.Count
+        w = w + area.Columns(i).ColumnWidth
+    Next i
+    If w > 255 Then w = 255
+    tmp.Columns(1).ColumnWidth = w
+    With tmp.Range("A1")
+        .NumberFormat = "@"
+        .Value = txt
+        .WrapText = True
+        .Font.Name = topCell.Font.Name
+        .Font.Bold = topCell.Font.Bold
+        .Font.Italic = topCell.Font.Italic
+    End With
+
+    Dim h As Double
+    Do
+        ' フォントを変えるたびに文字を入れ直し、行を低くしてから自動調整する
+        tmp.Range("A1").ClearContents
+        tmp.Range("A1").Font.Size = size
+        tmp.Range("A1").Value = txt
+        tmp.Rows(1).RowHeight = 12
+        tmp.Rows(1).AutoFit
+        h = tmp.Rows(1).RowHeight * HEIGHT_MARGIN + 2
+        ' 余裕を含めて上限（から1ポイント以内）に届くなら入りきっていない → 小さくする
+        If h < MAX_ROW_HEIGHT - 1 Or size <= MIN_FONT_SIZE Then Exit Do
+        size = size - 0.5
+    Loop
+    If area.Font.Size <> size Then area.Font.Size = size
+    FitOneCell = h
+End Function
 
 Private Function LoadSavedPath() As String
     LoadSavedPath = LoadText(NAME_SRC_PATH)

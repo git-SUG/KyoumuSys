@@ -25,6 +25,9 @@ Private Const TIDY_SCHEDULE As Boolean = True     ' ¡Œã‚Ì—\’è—“(D11)‚Ås–‚Ì‚È‚
 Private Const NAME_SRC_PATH As String = "T•ñì¬_s–—\’èƒpƒX"
 Private Const NAME_PENDING As String = "T•ñì¬_—\–ñ"      ' Œã”¼‚Ìˆ—‚É“n‚·T”Ô†EŠJn“ú
 Private Const NAME_NOTE As String = "T•ñì¬_’‹L"         ' Š®—¹ƒƒbƒZ[ƒW‚É“Y‚¦‚é’‹L
+Private Const MAX_ROW_HEIGHT As Double = 409          ' Excel ‚Ìs‚Ì‚‚³‚ÌãŒÀiƒ|ƒCƒ“ƒgj
+Private Const MIN_FONT_SIZE As Double = 6            ' k¬‚·‚é‚Æ‚«‚ÌƒtƒHƒ“ƒg‚Ì‰ºŒÀ
+Private Const HEIGHT_MARGIN As Double = 1.1          ' ‘ª‚Á‚½‚‚³‚É‚½‚¹‚é—]—Ti‰æ–Ê‚Æˆóü‚Ì·‚Ì•ªj
 
 Private quietMode As Boolean     ' ƒeƒXƒg—pFTrue ‚Ì‚Æ‚«ƒƒbƒZ[ƒW‚ğo‚³‚È‚¢
 Private lastMessage As String
@@ -238,6 +241,7 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
 
     If TIDY_SCHEDULE Then TidyScheduleFormulas ws
     KeepOutsideSpaces ws
+    FitRowHeights ws
 
     Application.ScreenUpdating = True
     ws.Activate
@@ -434,6 +438,101 @@ Private Sub KeepOutsideSpaces(ByVal ws As Worksheet)
             "&CHAR(10))&IF(J" & (4 + i) & "="""","""",J" & (4 + i) & ")"
     Next i
 End Sub
+
+' è‚Å‘‚«‘«‚µ‚½‚ ‚Æ‚ÉA•\¦’†‚ÌTƒV[ƒg‚Ìs‚Ì‚‚³‚¾‚¯‚ğ’²®‚µ’¼‚·
+Public Sub s‚Ì‚‚³’²®()
+    If Not IsNumeric(ActiveSheet.Name) Then
+        MsgBox "T‚ÌƒV[ƒgi–¼‘O‚ª”Ô†‚ÌƒV[ƒgj‚ğ•\¦‚µ‚Ä‚©‚çÀs‚µ‚Ä‚­‚¾‚³‚¢B", vbExclamation, "T•ñì¬"
+        Exit Sub
+    End If
+    Application.ScreenUpdating = False
+    FitRowHeights ActiveSheet
+    Application.ScreenUpdating = True
+End Sub
+
+' C4:E8iAEB —ñ‚àŠÜ‚Şj‚Æ D11 ‚Ì“à—e‚ª‚·‚×‚ÄŒ©‚¦‚é‚æ‚¤‚És‚Ì‚‚³‚ğ’²®‚·‚éB
+'   Es‚Ì‚‚³‚»‚Ìs‚ÌƒZƒ‹‚ª‘S•”•\¦‚Å‚«‚é‚‚³‚ÌÅ‘å’liŒ´–{‚Ì‚‚³‚æ‚è’á‚­‚Í‚µ‚È‚¢j
+'   EãŒÀ 409 ƒ|ƒCƒ“ƒg‚Å‚à“ü‚è‚«‚ç‚È‚¢ƒZƒ‹‚ÍAƒtƒHƒ“ƒg‚ğ 0.5 ‚¸‚Â¬‚³‚­‚·‚é
+Private Sub FitRowHeights(ByVal ws As Worksheet)
+    Dim wsGen As Worksheet, tmp As Worksheet, r As Long
+    Set wsGen = FindSheet(ThisWorkbook, SHEET_GENPON)
+    Application.Calculate                ' ‘‚«‚ñ‚¾ƒf[ƒ^‚Å”®‚ğŒvZ‚µI‚¦‚Ä‚©‚ç‘ª‚é
+
+    ' ‚‚³‚ğ‘ª‚é‚½‚ß‚ÌˆêƒV[ƒgiÅŒã‚Éíœj
+    Set tmp = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    For r = 4 To 8
+        FitOneRow ws, wsGen, tmp, r, Array("A", "B", "C", "D", "E")
+    Next r
+    FitOneRow ws, wsGen, tmp, 11, Array("D")
+
+    Application.DisplayAlerts = False
+    tmp.Delete
+    Application.DisplayAlerts = True
+    ws.Activate
+End Sub
+
+Private Sub FitOneRow(ByVal ws As Worksheet, ByVal wsGen As Worksheet, ByVal tmp As Worksheet, _
+                      ByVal r As Long, ByVal cols As Variant)
+    Dim need As Double, h As Double, c As Variant
+    If wsGen Is Nothing Then need = ws.Rows(r).RowHeight Else need = wsGen.Rows(r).RowHeight
+    For Each c In cols
+        h = FitOneCell(ws.Range(c & r), wsGen, tmp)
+        If h > need Then need = h
+    Next c
+    If need > MAX_ROW_HEIGHT Then need = MAX_ROW_HEIGHT
+    ws.Rows(r).RowHeight = need
+End Sub
+
+' ƒZƒ‹iŒ‹‡ƒZƒ‹‚È‚çŒ‹‡”ÍˆÍ‘S‘Ìj‚ğ‘S•”•\¦‚·‚é‚Ì‚É•K—v‚È‚‚³‚ğ•Ô‚·B
+' ãŒÀ‚ğ’´‚¦‚é‚Æ‚«‚ÍƒtƒHƒ“ƒg‚ğ¬‚³‚­‚µ‚Äû‚ß‚éB
+Private Function FitOneCell(ByVal cell As Range, ByVal wsGen As Worksheet, ByVal tmp As Worksheet) As Double
+    Dim area As Range, topCell As Range, v As Variant, txt As String
+    Set area = cell.MergeArea
+    Set topCell = area.Cells(1, 1)
+
+    ' ƒtƒHƒ“ƒgƒTƒCƒY‚ÍŒ´–{‚ÌƒTƒCƒY‚©‚ç‘ª‚è’¼‚·iì‚è’¼‚µ‚½‚Æ‚«‚É¬‚³‚¢‚Ü‚Ü‚É‚È‚ç‚È‚¢‚æ‚¤‚Éj
+    Dim size As Double
+    size = topCell.Font.Size
+    If Not wsGen Is Nothing Then size = wsGen.Range(topCell.Address).Font.Size
+    If area.Font.Size <> size Then area.Font.Size = size
+
+    v = topCell.Value
+    If IsError(v) Then Exit Function
+    txt = CStr(v)
+    If txt = "" Then Exit Function
+
+    ' ˆêƒV[ƒg‚Ì A1 ‚ğ“¯‚¶•E“¯‚¶ƒtƒHƒ“ƒg‚É‚µ‚ÄAs‚Ì‚‚³‚ğ©“®’²®‚µ‚Ä‘ª‚é
+    Dim w As Double, i As Long
+    For i = 1 To area.Columns.Count
+        w = w + area.Columns(i).ColumnWidth
+    Next i
+    If w > 255 Then w = 255
+    tmp.Columns(1).ColumnWidth = w
+    With tmp.Range("A1")
+        .NumberFormat = "@"
+        .Value = txt
+        .WrapText = True
+        .Font.Name = topCell.Font.Name
+        .Font.Bold = topCell.Font.Bold
+        .Font.Italic = topCell.Font.Italic
+    End With
+
+    Dim h As Double
+    Do
+        ' ƒtƒHƒ“ƒg‚ğ•Ï‚¦‚é‚½‚Ñ‚É•¶š‚ğ“ü‚ê’¼‚µAs‚ğ’á‚­‚µ‚Ä‚©‚ç©“®’²®‚·‚é
+        tmp.Range("A1").ClearContents
+        tmp.Range("A1").Font.Size = size
+        tmp.Range("A1").Value = txt
+        tmp.Rows(1).RowHeight = 12
+        tmp.Rows(1).AutoFit
+        h = tmp.Rows(1).RowHeight * HEIGHT_MARGIN + 2
+        ' —]—T‚ğŠÜ‚ß‚ÄãŒÀi‚©‚ç1ƒ|ƒCƒ“ƒgˆÈ“àj‚É“Í‚­‚È‚ç“ü‚è‚«‚Á‚Ä‚¢‚È‚¢ ¨ ¬‚³‚­‚·‚é
+        If h < MAX_ROW_HEIGHT - 1 Or size <= MIN_FONT_SIZE Then Exit Do
+        size = size - 0.5
+    Loop
+    If area.Font.Size <> size Then area.Font.Size = size
+    FitOneCell = h
+End Function
 
 Private Function LoadSavedPath() As String
     LoadSavedPath = LoadText(NAME_SRC_PATH)

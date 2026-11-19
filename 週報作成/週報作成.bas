@@ -9,7 +9,8 @@ Option Explicit
 '  を読み取り、週報シート（「原本」のコピー）の G13:L43 に書き込みます。
 '  月をまたぐ週でも自動で次の月のシートから読み取ります。
 '
-'  使い方：Alt+F8 →「週報作成」→ 実行（または Ctrl+Shift+W）
+'  使い方：Alt+F8 →「週報作成」→ 実行
+'  （ショートカットキーは Alt+F8 →［オプション］で設定できます）
 '===============================================================================
 
 '----- 設定 -----------------------------------------------------------------
@@ -24,7 +25,6 @@ Private Const NAME_SRC_PATH As String = "週報作成_行事予定パス"
 ' メイン：週番号を聞いて週報シートを作る
 '===============================================================================
 Public Sub 週報作成()
-Attribute 週報作成.VB_ProcData.VB_Invoke_Func = "W\n14"
     Dim firstMonday As Date
     If Not GetFirstMonday(firstMonday) Then Exit Sub
 
@@ -63,8 +63,8 @@ End Sub
 '===============================================================================
 ' 本体：週報シートを用意してデータを書き込む（戻り値＝完了メッセージ、中止時は ""）
 '===============================================================================
-Public Function MakeWeeklyReport(wbSrc As Workbook, weekNo As Long, startDate As Date, _
-                                 askOverwrite As Boolean) As String
+Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, _
+                                 ByVal startDate As Date, ByVal askOverwrite As Boolean) As String
     Dim ws As Worksheet
     Set ws = FindSheet(ThisWorkbook, CStr(weekNo))
 
@@ -203,17 +203,17 @@ Private Function GetSourceWorkbook(ByRef openedHere As Boolean) As Workbook
     Set GetSourceWorkbook = wb
 End Function
 
-Private Function IsSourceWorkbook(wb As Workbook) As Boolean
+Private Function IsSourceWorkbook(ByVal wb As Workbook) As Boolean
     IsSourceWorkbook = Not (MonthSheet(wb, 4) Is Nothing) And Not (MonthSheet(wb, 12) Is Nothing)
 End Function
 
 ' 月シート（「１２月」のような全角、または「12月」）を返す
-Private Function MonthSheet(wb As Workbook, m As Long) As Worksheet
+Private Function MonthSheet(ByVal wb As Workbook, ByVal m As Long) As Worksheet
     Set MonthSheet = FindSheet(wb, StrConv(CStr(m), vbWide) & "月")
     If MonthSheet Is Nothing Then Set MonthSheet = FindSheet(wb, CStr(m) & "月")
 End Function
 
-Private Function FindSheet(wb As Workbook, sheetName As String) As Worksheet
+Private Function FindSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
     Dim ws As Worksheet
     For Each ws In wb.Worksheets
         If ws.Name = sheetName Then
@@ -238,7 +238,7 @@ Private Function LastWeekSheet() As Worksheet
 End Function
 
 ' 空の数式が返す 0 やエラー値を空欄にする
-Private Function CleanText(c As Range) As String
+Private Function CleanText(ByVal c As Range) As String
     Dim v As Variant
     v = c.Value
     If IsError(v) Or IsEmpty(v) Then Exit Function
@@ -253,12 +253,12 @@ Private Function CleanText(c As Range) As String
     End If
 End Function
 
-Private Function SchoolYear(d As Date) As Long
+Private Function SchoolYear(ByVal d As Date) As Long
     If Month(d) < 4 Then SchoolYear = Year(d) - 1 Else SchoolYear = Year(d)
 End Function
 
 ' 今後の予定（F20:F43 → G11 → D11）で、校内行事のない日を表示しないようにする
-Private Sub TidyScheduleFormulas(ws As Worksheet)
+Private Sub TidyScheduleFormulas(ByVal ws As Worksheet)
     Dim r As Long, parts As String
     For r = 20 To 43
         ws.Range("F" & r).Formula = "=IF(J" & r & "="""","""",G" & r & "&""(""&H" & r & _
@@ -284,7 +284,7 @@ Private Function LoadSavedPath() As String
     LoadSavedPath = Replace(s, """""", """")
 End Function
 
-Private Sub SaveSourcePath(path As String)
+Private Sub SaveSourcePath(ByVal path As String)
     On Error Resume Next
     ThisWorkbook.Names(NAME_SRC_PATH).Delete
     On Error GoTo 0

@@ -21,25 +21,24 @@ Private Const SRC_FIRST_ROW As Long = 3           ' 月シートで「1日」がある行
 Private Const TIDY_SCHEDULE As Boolean = True     ' 今後の予定欄(D11)で行事のない日を省く
 Private Const NAME_SRC_PATH As String = "週報作成_行事予定パス"
 
+' Shift キーの状態を調べる（Ctrl+Shift+○ で起動したとき、Shift を押したまま
+' Workbooks.Open するとマクロが黙って止まる Excel の不具合を避けるため）
+#If VBA7 Then
+Private Declare PtrSafe Function GetAsyncKeyState Lib "user32" (ByVal vKey As Long) As Integer
+#Else
+Private Declare Function GetAsyncKeyState Lib "user32" (ByVal vKey As Long) As Integer
+#End If
+
+Private mStep As String   ' エラー時に「どこで止まったか」を表示するため
+
 '===============================================================================
 ' メイン：週番号を聞いて週報シートを作る
 '===============================================================================
 Public Sub 週報作成()
-    Dim firstMonday As Date
-    If Not GetFirstMonday(firstMonday) Then Exit Sub
-
-    ' 既定値＝今日より後の最初の月曜日の週
-    Dim nextMon As Date, defWeek As Long
-    nextMon = Date + (9 - Weekday(Date, vbSunday)) Mod 7
-    If nextMon = Date Then nextMon = Date + 7
-    defWeek = Int((nextMon - firstMonday) / 7) + 1
-    If defWeek < 1 Then defWeek = 1
-
-    Dim ans As String, weekNo As Long
-    ans = InputBox("作成する週の番号を入力してください。" & vbLf & vbLf & _
-                   "（例）第" & defWeek & "週 ＝ " & _
-                   Format(firstMonday + (defWeek - 1) * 7, "m/d") & "（月）～", _
-                   "週報作成", CStr(defWeek))
+    ' 既定値＝今日より後の最初の月曜日の週（作成済みの週シートの日付から判断）
+    Dim ans As String, weekNo As Long, defWeek As Long
+    defWeek = DefaultWeekNo()
+    ans = InputBox("作成する週の番号を入力してください。", "週報作成", CStr(defWeek))
     If ans = "" Then Exit Sub
     ans = StrConv(ans, vbNarrow)
     If Not IsNumeric(ans) Then
@@ -49,15 +48,45 @@ Public Sub 週報作成()
     weekNo = CLng(ans)
     If weekNo < 1 Then Exit Sub
 
-    Dim wbSrc As Workbook, openedHere As Boolean
+    ' 月曜日の日付を確認・訂正してもらう（夏休みなど週数を数えない期間があるため）
+    Dim startDate As Date
+    If Not AskMonday(weekNo, startDate) Then Exit Sub
+
+    Dim wbSrc As Workbook, openedHere As Boolean, msg As String
+    Dim oldEvents As Boolean
+    oldEvents = Application.EnableEvents
+
+    On Error GoTo EH
+    ' 行事予定ブックや週報シートのイベント処理（Workbook_Open など）で
+    ' マクロが中断されないよう、処理中はイベントを止める
+    Application.EnableEvents = False
+
+    mStep = "行事予定ブックを開く"
     Set wbSrc = GetSourceWorkbook(openedHere)
-    If wbSrc Is Nothing Then Exit Sub
+    If wbSrc Is Nothing Then GoTo Finally
 
-    Dim msg As String
-    msg = MakeWeeklyReport(wbSrc, weekNo, firstMonday + (weekNo - 1) * 7, True)
+    msg = MakeWeeklyReport(wbSrc, weekNo, startDate, True)
 
+Finally:
+    On Error Resume Next
+    mStep = "行事予定ブックを閉じる"
     If openedHere Then wbSrc.Close SaveChanges:=False
+    Application.EnableEvents = oldEvents
+    Application.ScreenUpdating = True
+    ThisWorkbook.Activate
+    On Error GoTo 0
     If msg <> "" Then MsgBox msg, vbInformation, "週報作成"
+    Exit Sub
+
+EH:
+    Dim errNo As Long, errDesc As String
+    errNo = Err.Number: errDesc = Err.Description
+    Application.ScreenUpdating = True
+    MsgBox "週報の作成中にエラーが発生したため、中止しました。" & vbLf & vbLf & _
+           "処理：" & mStep & vbLf & _
+           "エラー " & errNo & "：" & errDesc, vbCritical, "週報作成"
+    msg = ""
+    Resume Finally
 End Sub
 
 '===============================================================================
@@ -75,8 +104,14 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
             MsgBox "「" & SHEET_GENPON & "」シートが見つかりません。", vbCritical, "週報作成"
             Exit Function
         End If
-        wsGen.Copy After:=LastWeekSheet()
-        Set ws = ActiveSheet
+        mStep = "「" & SHEET_GENPON & "」シートをコピーする"
+        Dim wsAfter As Worksheet
+        Set wsAfter = LastWeekSheet()
+        wsGen.Copy After:=wsAfter
+        ' 「原本」が非表示だとコピーも非表示になり ActiveSheet にならないので、
+        ' 位置でコピーしたシートを取り出す
+        Set ws = ThisWorkbook.Sheets(wsAfter.Index + 1)
+        mStep = "シート名を「" & weekNo & "」にする"
         ws.Name = CStr(weekNo)
         ws.Visible = xlSheetVisible
     ElseIf askOverwrite Then
@@ -91,6 +126,7 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
     Application.ScreenUpdating = False
 
     ' 年度・月・週の初日
+    mStep = "年度・月・週の初日（F12・H12・F13）を書き込む"
     ws.Range("F12").Value = SchoolYear(startDate)
     ws.Range("H12").Value = Month(startDate)
     ws.Range("F13").ClearContents
@@ -105,12 +141,13 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
         d = startDate + i
         If Month(d) <> curMonth Then
             curMonth = Month(d)
+            mStep = curMonth & "月のシートから読み取る"
             Set wsM = MonthSheet(wbSrc, curMonth)
             If wsM Is Nothing Then missing = missing & " " & curMonth & "月"
         End If
         r = FIRST_ROW + i
         ws.Cells(r, "G").Value = Day(d)
-        ws.Cells(r, "H").Value = Mid("日月火水木金土", Weekday(d, vbSunday), 1)
+        ws.Cells(r, "H").Value = YoubiOf(d)
         If Not wsM Is Nothing Then
             Dim sr As Long
             sr = SRC_FIRST_ROW + Day(d) - 1
@@ -121,12 +158,16 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
         End If
     Next i
 
+    mStep = "今後の予定欄（F20:F43・G11）の式を設定する"
     If TIDY_SCHEDULE Then TidyScheduleFormulas ws
+    mStep = "校外行事欄（D4:D10）の式を設定する"
     KeepOutsideSpaces ws
 
+    mStep = "できあがったシートを表示する"
     Application.ScreenUpdating = True
+    ThisWorkbook.Activate
     ws.Activate
-    ws.Range("A1").Select
+    Application.Goto ws.Range("A1"), True
 
     MakeWeeklyReport = "第" & weekNo & "週（" & Format(startDate, "m/d") & "～" & _
                        Format(startDate + 6, "m/d") & "）の週報を作成しました。" & vbLf & _
@@ -141,26 +182,88 @@ End Function
 ' 補助
 '===============================================================================
 
-' 第1週の月曜日：シート「1」の「週初日」（G2 または H2）から取得。なければ入力してもらう
-Private Function GetFirstMonday(ByRef result As Date) As Boolean
-    Dim ws As Worksheet, addr As Variant
-    Set ws = FindSheet(ThisWorkbook, "1")
-    If Not ws Is Nothing Then
-        For Each addr In Array("H2", "G2")
-            If IsDate(ws.Range(addr).Value) And Not IsEmpty(ws.Range(addr).Value) Then
-                If VarType(ws.Range(addr).Value) = vbDate Then
-                    result = ws.Range(addr).Value
-                    GetFirstMonday = True
-                    Exit Function
-                End If
+' 週シートの週初日（F13、なければ H2・G2）を取り出す
+Private Function WeekStartOf(ByVal ws As Worksheet, ByRef result As Date) As Boolean
+    Dim addr As Variant, v As Variant
+    For Each addr In Array("F13", "H2", "G2")
+        v = ws.Range(addr).Value
+        If VarType(v) = vbDate Then
+            result = v
+            WeekStartOf = True
+            Exit Function
+        End If
+    Next addr
+End Function
+
+' 前の週のシートの週初日＋7日（前の週がなければ、さらに前の週から数える）
+Private Function GuessMonday(ByVal weekNo As Long, ByRef result As Date, ByRef basis As String) As Boolean
+    Dim n As Long, ws As Worksheet, d As Date
+    For n = weekNo - 1 To 1 Step -1
+        Set ws = FindSheet(ThisWorkbook, CStr(n))
+        If Not ws Is Nothing Then
+            If WeekStartOf(ws, d) Then
+                result = d + (weekNo - n) * 7
+                basis = "前の週（第" & n & "週＝" & Format(d, "m/d") & "（" & YoubiOf(d) & "）～）"
+                GuessMonday = True
+                Exit Function
             End If
-        Next addr
+        End If
+    Next n
+    ' 前の週がないとき（第1週など）は、その週のシート自身の日付
+    Set ws = FindSheet(ThisWorkbook, CStr(weekNo))
+    If Not ws Is Nothing Then
+        If WeekStartOf(ws, d) Then
+            result = d
+            basis = "第" & weekNo & "週のシート"
+            GuessMonday = True
+        End If
     End If
-    Dim s As String
-    s = InputBox("第1週の月曜日の日付を入力してください（例：2026/4/6）", "週報作成")
-    If s = "" Or Not IsDate(s) Then Exit Function
-    result = CDate(s)
-    GetFirstMonday = True
+End Function
+
+' 月曜日の日付を表示して、訂正があれば入力してもらう
+Private Function AskMonday(ByVal weekNo As Long, ByRef result As Date) As Boolean
+    Dim guess As Date, basis As String, def As String, prompt As String, ans As String
+    If GuessMonday(weekNo, guess, basis) Then
+        def = Format(guess, "yyyy/m/d")
+        prompt = "第" & weekNo & "週の月曜日を、" & basis & " から数えて" & vbLf & vbLf & _
+                 "    " & Format(guess, "yyyy年m月d日") & "（" & YoubiOf(guess) & "）" & vbLf & vbLf & _
+                 "とします。よければそのまま［OK］を押してください。" & vbLf & _
+                 "夏休み明けなどで違うときは、正しい月曜日の日付（例：2026/9/7）に直して［OK］を押してください。"
+    Else
+        prompt = "前の週のシートから日付が分かりませんでした。" & vbLf & _
+                 "第" & weekNo & "週の月曜日の日付を入力してください（例：2026/9/7）。"
+    End If
+    Do
+        ans = InputBox(prompt, "週報作成", def)
+        If ans = "" Then Exit Function
+        ans = Trim$(StrConv(ans, vbNarrow))
+        If IsDate(ans) Then Exit Do
+        MsgBox "日付として読めませんでした。「2026/9/7」のように入力してください。", vbExclamation, "週報作成"
+        def = ans
+    Loop
+    result = DateValue(ans)
+    AskMonday = True
+End Function
+
+' 入力欄に最初に出す週番号：今日より後の最初の月曜日の週
+Private Function DefaultWeekNo() As Long
+    Dim nextMon As Date, ws As Worksheet, d As Date, n As Long, bestN As Long
+    nextMon = Date + (9 - Weekday(Date, vbSunday)) Mod 7
+    If nextMon = Date Then nextMon = Date + 7
+    For Each ws In ThisWorkbook.Worksheets
+        If IsNumeric(ws.Name) Then
+            n = CLng(ws.Name)
+            If WeekStartOf(ws, d) Then
+                If d = nextMon Then DefaultWeekNo = n: Exit Function   ' すでにある週
+                If d < nextMon And n > bestN Then bestN = n
+            End If
+        End If
+    Next ws
+    DefaultWeekNo = bestN + 1      ' 作成済みの最後の週の次
+End Function
+
+Private Function YoubiOf(ByVal d As Date) As String
+    YoubiOf = Mid("日月火水木金土", Weekday(d, vbSunday), 1)
 End Function
 
 ' 行事予定ブックを探す：開いていればそれを使い、なければ前回のパス→ファイル選択
@@ -189,20 +292,34 @@ Private Function GetSourceWorkbook(ByRef openedHere As Boolean) As Workbook
         path = CStr(f)
     End If
 
+    ' Shift キーが離されるまで待つ（押したまま開くとマクロが止まるため）
+    WaitShiftReleased
+
+    mStep = "行事予定ブックを開く（" & path & "）"
     Application.ScreenUpdating = False
-    Set wb = Workbooks.Open(Filename:=path, UpdateLinks:=0, ReadOnly:=True)
+    Set wb = Workbooks.Open(Filename:=path, UpdateLinks:=0, ReadOnly:=True, AddToMru:=False)
+    openedHere = True
     ThisWorkbook.Activate
     If Not IsSourceWorkbook(wb) Then
         MsgBox "選んだファイルに「４月」～「３月」のシートが見つかりません。" & vbLf & wb.Name, _
                vbExclamation, "週報作成"
         wb.Close SaveChanges:=False
+        openedHere = False
         SaveSourcePath ""
         Exit Function
     End If
-    SaveSourcePath path
-    openedHere = True
     Set GetSourceWorkbook = wb
+    SaveSourcePath path
 End Function
+
+Private Sub WaitShiftReleased()
+    Dim t As Single
+    t = Timer
+    Do While (GetAsyncKeyState(vbKeyShift) And &H8000) <> 0
+        DoEvents
+        If Abs(Timer - t) > 10 Then Exit Do
+    Loop
+End Sub
 
 Private Function IsSourceWorkbook(ByVal wb As Workbook) As Boolean
     IsSourceWorkbook = Not (MonthSheet(wb, 4) Is Nothing) And Not (MonthSheet(wb, 12) Is Nothing)
@@ -297,9 +414,9 @@ Private Function LoadSavedPath() As String
 End Function
 
 Private Sub SaveSourcePath(ByVal path As String)
+    ' 保存できなくても週報作成は続ける（次回またファイルを選ぶだけ）
     On Error Resume Next
     ThisWorkbook.Names(NAME_SRC_PATH).Delete
-    On Error GoTo 0
     If path = "" Then Exit Sub
     ThisWorkbook.Names.Add Name:=NAME_SRC_PATH, _
         RefersTo:="=""" & Replace(path, """", """""") & """", Visible:=False

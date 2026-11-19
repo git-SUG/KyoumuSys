@@ -20,6 +20,16 @@ Private Const SRC_FIRST_ROW As Long = 3           ' 月シートで「1日」が
 Private Const TIDY_SCHEDULE As Boolean = True     ' 今後の予定欄(D11)で行事のない日を省く
 Private Const NAME_SRC_PATH As String = "週報作成_行事予定パス"
 
+' Shift キーの状態を調べる（Ctrl+Shift+○ で起動したとき、Shift を押したまま
+' Workbooks.Open するとマクロが黙って止まる Excel の不具合を避けるため）
+#If VBA7 Then
+Private Declare PtrSafe Function GetAsyncKeyState Lib "user32" (ByVal vKey As Long) As Integer
+#Else
+Private Declare Function GetAsyncKeyState Lib "user32" (ByVal vKey As Long) As Integer
+#End If
+
+Private mStep As String   ' エラー時に「どこで止まったか」を表示するため
+
 '===============================================================================
 ' メイン：週番号を聞いて週報シートを作る
 '===============================================================================
@@ -48,15 +58,41 @@ Public Sub 週報作成()
     weekNo = CLng(ans)
     If weekNo < 1 Then Exit Sub
 
-    Dim wbSrc As Workbook, openedHere As Boolean
-    Set wbSrc = GetSourceWorkbook(openedHere)
-    If wbSrc Is Nothing Then Exit Sub
+    Dim wbSrc As Workbook, openedHere As Boolean, msg As String
+    Dim oldEvents As Boolean
+    oldEvents = Application.EnableEvents
 
-    Dim msg As String
+    On Error GoTo EH
+    ' 行事予定ブックや週報シートのイベント処理（Workbook_Open など）で
+    ' マクロが中断されないよう、処理中はイベントを止める
+    Application.EnableEvents = False
+
+    mStep = "行事予定ブックを開く"
+    Set wbSrc = GetSourceWorkbook(openedHere)
+    If wbSrc Is Nothing Then GoTo Finally
+
     msg = MakeWeeklyReport(wbSrc, weekNo, firstMonday + (weekNo - 1) * 7, True)
 
+Finally:
+    On Error Resume Next
+    mStep = "行事予定ブックを閉じる"
     If openedHere Then wbSrc.Close SaveChanges:=False
+    Application.EnableEvents = oldEvents
+    Application.ScreenUpdating = True
+    ThisWorkbook.Activate
+    On Error GoTo 0
     If msg <> "" Then MsgBox msg, vbInformation, "週報作成"
+    Exit Sub
+
+EH:
+    Dim errNo As Long, errDesc As String
+    errNo = Err.Number: errDesc = Err.Description
+    Application.ScreenUpdating = True
+    MsgBox "週報の作成中にエラーが発生したため、中止しました。" & vbLf & vbLf & _
+           "処理：" & mStep & vbLf & _
+           "エラー " & errNo & "：" & errDesc, vbCritical, "週報作成"
+    msg = ""
+    Resume Finally
 End Sub
 
 '===============================================================================
@@ -74,8 +110,14 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
             MsgBox "「" & SHEET_GENPON & "」シートが見つかりません。", vbCritical, "週報作成"
             Exit Function
         End If
-        wsGen.Copy After:=LastWeekSheet()
-        Set ws = ActiveSheet
+        mStep = "「" & SHEET_GENPON & "」シートをコピーする"
+        Dim wsAfter As Worksheet
+        Set wsAfter = LastWeekSheet()
+        wsGen.Copy After:=wsAfter
+        ' 「原本」が非表示だとコピーも非表示になり ActiveSheet にならないので、
+        ' 位置でコピーしたシートを取り出す
+        Set ws = ThisWorkbook.Sheets(wsAfter.Index + 1)
+        mStep = "シート名を「" & weekNo & "」にする"
         ws.Name = CStr(weekNo)
         ws.Visible = xlSheetVisible
     ElseIf askOverwrite Then
@@ -90,6 +132,7 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
     Application.ScreenUpdating = False
 
     ' 年度・月・週の初日
+    mStep = "年度・月・週の初日（F12・H12・F13）を書き込む"
     ws.Range("F12").Value = SchoolYear(startDate)
     ws.Range("H12").Value = Month(startDate)
     ws.Range("F13").ClearContents
@@ -104,6 +147,7 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
         d = startDate + i
         If Month(d) <> curMonth Then
             curMonth = Month(d)
+            mStep = curMonth & "月のシートから読み取る"
             Set wsM = MonthSheet(wbSrc, curMonth)
             If wsM Is Nothing Then missing = missing & " " & curMonth & "月"
         End If
@@ -120,11 +164,14 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
         End If
     Next i
 
+    mStep = "今後の予定欄（F20:F43・G11）の式を設定する"
     If TIDY_SCHEDULE Then TidyScheduleFormulas ws
 
+    mStep = "できあがったシートを表示する"
     Application.ScreenUpdating = True
+    ThisWorkbook.Activate
     ws.Activate
-    ws.Range("A1").Select
+    Application.Goto ws.Range("A1"), True
 
     MakeWeeklyReport = "第" & weekNo & "週（" & Format(startDate, "m/d") & "～" & _
                        Format(startDate + 6, "m/d") & "）の週報を作成しました。" & vbLf & _
@@ -187,20 +234,34 @@ Private Function GetSourceWorkbook(ByRef openedHere As Boolean) As Workbook
         path = CStr(f)
     End If
 
+    ' Shift キーが離されるまで待つ（押したまま開くとマクロが止まるため）
+    WaitShiftReleased
+
+    mStep = "行事予定ブックを開く（" & path & "）"
     Application.ScreenUpdating = False
-    Set wb = Workbooks.Open(Filename:=path, UpdateLinks:=0, ReadOnly:=True)
+    Set wb = Workbooks.Open(Filename:=path, UpdateLinks:=0, ReadOnly:=True, AddToMru:=False)
+    openedHere = True
     ThisWorkbook.Activate
     If Not IsSourceWorkbook(wb) Then
         MsgBox "選んだファイルに「４月」～「３月」のシートが見つかりません。" & vbLf & wb.Name, _
                vbExclamation, "週報作成"
         wb.Close SaveChanges:=False
+        openedHere = False
         SaveSourcePath ""
         Exit Function
     End If
-    SaveSourcePath path
-    openedHere = True
     Set GetSourceWorkbook = wb
+    SaveSourcePath path
 End Function
+
+Private Sub WaitShiftReleased()
+    Dim t As Single
+    t = Timer
+    Do While (GetAsyncKeyState(vbKeyShift) And &H8000) <> 0
+        DoEvents
+        If Abs(Timer - t) > 10 Then Exit Do
+    Loop
+End Sub
 
 Private Function IsSourceWorkbook(ByVal wb As Workbook) As Boolean
     IsSourceWorkbook = Not (MonthSheet(wb, 4) Is Nothing) And Not (MonthSheet(wb, 12) Is Nothing)
@@ -284,9 +345,9 @@ Private Function LoadSavedPath() As String
 End Function
 
 Private Sub SaveSourcePath(ByVal path As String)
+    ' 保存できなくても週報作成は続ける（次回またファイルを選ぶだけ）
     On Error Resume Next
     ThisWorkbook.Names(NAME_SRC_PATH).Delete
-    On Error GoTo 0
     If path = "" Then Exit Sub
     ThisWorkbook.Names.Add Name:=NAME_SRC_PATH, _
         RefersTo:="=""" & Replace(path, """", """""") & """", Visible:=False

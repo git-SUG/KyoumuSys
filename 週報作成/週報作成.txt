@@ -9,6 +9,9 @@ Option Explicit
 '  月をまたぐ週でも自動で次の月のシートから読み取ります。
 '
 '  使い方：Alt+F8 →「週報作成」→ 実行
+'    ① 週の番号を入力（記入済みの最後の週の次が入っています）
+'    ② 週の開始日（月曜日）を確認。前の週＋7日が入っているので、
+'       長期休業明けなどで違うときだけ直す
 '  （ショートカットキーは Alt+F8 →［オプション］で設定できます）
 '===============================================================================
 
@@ -24,21 +27,12 @@ Private Const NAME_SRC_PATH As String = "週報作成_行事予定パス"
 ' メイン：週番号を聞いて週報シートを作る
 '===============================================================================
 Public Sub 週報作成()
-    Dim firstMonday As Date
-    If Not GetFirstMonday(firstMonday) Then Exit Sub
-
-    ' 既定値＝今日より後の最初の月曜日の週
-    Dim nextMon As Date, defWeek As Long
-    nextMon = Date + (9 - Weekday(Date, vbSunday)) Mod 7
-    If nextMon = Date Then nextMon = Date + 7
-    defWeek = Int((nextMon - firstMonday) / 7) + 1
-    If defWeek < 1 Then defWeek = 1
+    ' 1) 週番号（既定値＝記入済みの最後の週の次）
+    Dim defWeek As Long
+    defWeek = LastFilledWeek() + 1
 
     Dim ans As String, weekNo As Long
-    ans = InputBox("作成する週の番号を入力してください。" & vbLf & vbLf & _
-                   "（例）第" & defWeek & "週 ＝ " & _
-                   Format(firstMonday + (defWeek - 1) * 7, "m/d") & "（月）～", _
-                   "週報作成", CStr(defWeek))
+    ans = InputBox("作成する週の番号を入力してください。", "週報作成", CStr(defWeek))
     If ans = "" Then Exit Sub
     ans = StrConv(ans, vbNarrow)
     If Not IsNumeric(ans) Then
@@ -48,16 +42,70 @@ Public Sub 週報作成()
     weekNo = CLng(ans)
     If weekNo < 1 Then Exit Sub
 
+    ' 2) 週の開始日（月曜日）：前の週から計算して表示し、訂正できるようにする
+    Dim startDate As Date, note As String
+    If Not AskStartDate(weekNo, startDate, note) Then Exit Sub
+
+    ' 3) 行事予定ブックを用意して書き込む
     Dim wbSrc As Workbook, openedHere As Boolean
     Set wbSrc = GetSourceWorkbook(openedHere)
     If wbSrc Is Nothing Then Exit Sub
 
     Dim msg As String
-    msg = MakeWeeklyReport(wbSrc, weekNo, firstMonday + (weekNo - 1) * 7, True)
+    msg = MakeWeeklyReport(wbSrc, weekNo, startDate, True)
 
     If openedHere Then wbSrc.Close SaveChanges:=False
-    If msg <> "" Then MsgBox msg, vbInformation, "週報作成"
+    If msg <> "" Then MsgBox msg & note, vbInformation, "週報作成"
 End Sub
+
+' 開始日を前の週から計算して表示し、訂正を受け付ける
+'   訂正なし（OK のみ）→ 計算した日付のまま
+'   訂正あり           → 入力した日付（月曜日でなければ、その週の月曜日）
+Private Function AskStartDate(ByVal weekNo As Long, ByRef result As Date, ByRef note As String) As Boolean
+    Dim calc As Date, prevNo As Long, prompt As String, defText As String
+    note = ""
+    If PrevWeekStart(weekNo, calc, prevNo) Then
+        defText = Format(calc, "yyyy/m/d")
+        prompt = "第" & weekNo & "週の開始日（月曜日）" & vbLf & vbLf & _
+                 "前の週（第" & prevNo & "週：" & Format(calc - 7 * (weekNo - prevNo), "m/d") & _
+                 "～）から計算すると " & Format(calc, "m/d") & "（" & WeekdayChar(calc) & "）です。" & vbLf & vbLf & _
+                 "長期休業などで違う場合は、正しい日付に直してください。" & vbLf & _
+                 "（例：2026/8/31　または　8/31）"
+    Else
+        defText = ""
+        prompt = "第" & weekNo & "週の開始日（月曜日）を入力してください。" & vbLf & _
+                 "（前の週のシートから日付を求められませんでした）" & vbLf & vbLf & _
+                 "（例：2026/8/31　または　8/31）"
+    End If
+
+    Dim s As String
+    s = InputBox(prompt, "週報作成：週の開始日", defText)
+    If s = "" Then Exit Function                         ' キャンセル
+    s = StrConv(Trim$(s), vbNarrow)
+
+    If defText <> "" And s = defText Then
+        result = calc                                    ' 訂正なし
+    Else
+        If Not IsDate(s) Then
+            MsgBox "日付として読み取れませんでした：" & s, vbExclamation, "週報作成"
+            Exit Function
+        End If
+        Dim d As Date
+        d = DateValue(s)
+        If InStr(s, "/") = InStrRev(s, "/") And defText <> "" Then
+            ' 「8/31」のように年を省略したときは、計算した日付に近い年を使う
+            d = DateSerial(Year(calc), Month(d), Day(d))
+            If d - calc > 180 Then d = DateSerial(Year(calc) - 1, Month(d), Day(d))
+            If calc - d > 180 Then d = DateSerial(Year(calc) + 1, Month(d), Day(d))
+        End If
+        result = MondayOf(d)
+        If result <> d Then
+            note = vbLf & vbLf & "※入力された " & Format(d, "m/d") & "（" & WeekdayChar(d) & _
+                   "）は月曜日ではないため、その週の月曜日 " & Format(result, "m/d") & " にしました。"
+        End If
+    End If
+    AskStartDate = True
+End Function
 
 '===============================================================================
 ' 本体：週報シートを用意してデータを書き込む（戻り値＝完了メッセージ、中止時は ""）
@@ -140,26 +188,72 @@ End Function
 ' 補助
 '===============================================================================
 
-' 第1週の月曜日：シート「1」の「週初日」（G2 または H2）から取得。なければ入力してもらう
-Private Function GetFirstMonday(ByRef result As Date) As Boolean
-    Dim ws As Worksheet, addr As Variant
-    Set ws = FindSheet(ThisWorkbook, "1")
-    If Not ws Is Nothing Then
-        For Each addr In Array("H2", "G2")
-            If IsDate(ws.Range(addr).Value) And Not IsEmpty(ws.Range(addr).Value) Then
-                If VarType(ws.Range(addr).Value) = vbDate Then
-                    result = ws.Range(addr).Value
-                    GetFirstMonday = True
+' 前の週の開始日＋7日を返す（見つかった前の週の番号も返す）
+'   さかのぼって最初に正しい開始日を持つ週を使う（空のひな形シートは飛ばす）
+Private Function PrevWeekStart(ByVal weekNo As Long, ByRef result As Date, ByRef prevNo As Long) As Boolean
+    Dim k As Long, ws As Worksheet, d As Date
+    For k = weekNo - 1 To 1 Step -1
+        Set ws = FindSheet(ThisWorkbook, CStr(k))
+        If Not ws Is Nothing Then
+            If SheetStartDate(ws, d) Then
+                result = d + 7 * (weekNo - k)
+                prevNo = k
+                PrevWeekStart = True
+                Exit Function
+            End If
+        End If
+    Next k
+End Function
+
+' 週シートの開始日（月曜日）。古い様式の「週初日」(H2/G2) → F13 の順に探す
+'   月曜日で、今年度の日付であるものだけを正しい開始日とみなす
+Private Function SheetStartDate(ByVal ws As Worksheet, ByRef result As Date) As Boolean
+    Dim addr As Variant, v As Variant
+    For Each addr In Array("H2", "G2", "F13")
+        v = ws.Range(addr).Value
+        If Not IsError(v) Then
+            ' 日付、または日付を表す数値（2000/1/1～2099/12/31）だけを対象にする
+            If VarType(v) = vbDate Or ((VarType(v) = vbDouble Or VarType(v) = vbLong _
+                                       Or VarType(v) = vbInteger) And v >= 36526 And v <= 73415) Then
+                If Weekday(CDate(v), vbMonday) = 1 And IsThisSchoolYear(CDate(v)) Then
+                    result = CDate(v)
+                    SheetStartDate = True
                     Exit Function
                 End If
             End If
-        Next addr
-    End If
-    Dim s As String
-    s = InputBox("第1週の月曜日の日付を入力してください（例：2026/4/6）", "週報作成")
-    If s = "" Or Not IsDate(s) Then Exit Function
-    result = CDate(s)
-    GetFirstMonday = True
+        End If
+    Next addr
+End Function
+
+' 原本 F12 の年度と同じ年度の日付か（F12 が読めなければ判定しない）
+Private Function IsThisSchoolYear(ByVal d As Date) As Boolean
+    Dim ws As Worksheet, y As Variant
+    IsThisSchoolYear = True
+    Set ws = FindSheet(ThisWorkbook, SHEET_GENPON)
+    If ws Is Nothing Then Exit Function
+    y = ws.Range("F12").Value
+    If IsNumeric(y) And Not IsEmpty(y) Then IsThisSchoolYear = (SchoolYear(d) = CLng(y))
+End Function
+
+' 記入済み（G13:L43 にデータがある）週シートのうち、番号が最大のもの
+Private Function LastFilledWeek() As Long
+    Dim ws As Worksheet, n As Long
+    For Each ws In ThisWorkbook.Worksheets
+        If IsNumeric(ws.Name) Then
+            n = CLng(ws.Name)
+            If n > LastFilledWeek Then
+                If Application.WorksheetFunction.CountA(ws.Range("G13:L43")) > 0 Then LastFilledWeek = n
+            End If
+        End If
+    Next ws
+End Function
+
+Private Function MondayOf(ByVal d As Date) As Date
+    MondayOf = d - (Weekday(d, vbMonday) - 1)
+End Function
+
+Private Function WeekdayChar(ByVal d As Date) As String
+    WeekdayChar = Mid("日月火水木金土", Weekday(d, vbSunday), 1)
 End Function
 
 ' 行事予定ブックを探す：開いていればそれを使い、なければ前回のパス→ファイル選択

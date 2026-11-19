@@ -121,6 +121,7 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
     Next i
 
     If TIDY_SCHEDULE Then TidyScheduleFormulas ws
+    KeepOutsideSpaces ws
 
     Application.ScreenUpdating = True
     ws.Activate
@@ -270,6 +271,17 @@ Private Sub TidyScheduleFormulas(ByVal ws As Worksheet)
         End If
     Next r
     ws.Range("G11").Formula = "=TEXTJOIN(CHAR(10),TRUE" & parts & ")"
+End Sub
+
+' 校外行事欄（D4:D10）で全角スペースを消さないようにする
+'  元の数式： =IF(K13="","",SUBSTITUTE(K13,"　","")&CHAR(10))&IF(J4="","",J4)
+'  変更後　： =IF(K13="","",K13&CHAR(10))&IF(J4="","",J4)
+Private Sub KeepOutsideSpaces(ByVal ws As Worksheet)
+    Dim i As Long
+    For i = 0 To 6
+        ws.Range("D" & (4 + i)).Formula = "=IF(K" & (13 + i) & "="""","""",K" & (13 + i) & _
+            "&CHAR(10))&IF(J" & (4 + i) & "="""","""",J" & (4 + i) & ")"
+    Next i
 End Sub
 
 Private Function LoadSavedPath() As String

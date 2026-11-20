@@ -600,7 +600,7 @@ Private Function IsRightBoundary(ByVal t As String, ByVal p As Long) As Boolean
     IsRightBoundary = InStr(ChrW(&H3000) & " " & vbLf & vbCr & "〇○（(＊*・、，,", Mid$(t, p, 1)) > 0
 End Function
 
-' 番号の文字か（半角・全角数字、丸数字 ①～⑳・㉑～㉟・㊱～㊿・➀～➉・❶～❿）
+' 番号の文字か（半角・全角数字、丸数字 ①～⑳ と 21～50 の丸数字、白抜き・黒丸の数字）
 Private Function IsNumberChar(ByVal ch As String) As Boolean
     Dim c As Long
     c = AscW(ch)

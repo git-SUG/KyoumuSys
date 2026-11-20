@@ -1,0 +1,754 @@
+Attribute VB_Name = "週報作成マクロ"
+Option Explicit
+'===============================================================================
+' 週報作成マクロ
+'
+'  「年間行事予定（月別のワークシート）」ブックの ４月～３月 シートから、
+'  指定した週の月曜日から31日分の
+'     日直（C列）・校内行事（D列）・校外行事（E列）・提出文書・備考（F列）
+'  を読み取り、週報シート（「原本」のコピー）の G13:L43 に書き込みます。
+'  月をまたぐ週でも自動で次の月のシートから読み取ります。
+'
+'  使い方：Alt+F8 →「週報作成」→ 実行
+'    ① 週の番号を入力（記入済みの最後の週の次が入っています）
+'    ② 週の開始日（月曜日）を確認。前の週＋7日が入っているので、
+'       長期休業明けなどで違うときだけ直す
+'  （ショートカットキーは Alt+F8 →［オプション］で設定できます）
+'===============================================================================
+
+'----- 設定 -----------------------------------------------------------------
+Private Const SHEET_GENPON As String = "原本"     ' 週報のひな形シート
+Private Const SHEET_EXTRA As String = "追加情報"  ' 校内行事を編集するキーワード表（A列：キーワード、B列：編集後）
+Private Const DAYS_TO_COPY As Long = 31           ' 転記する日数（G13:L43 = 31行）
+Private Const FIRST_ROW As Long = 13              ' 転記先の先頭行
+Private Const SRC_FIRST_ROW As Long = 3           ' 月シートで「1日」がある行
+Private Const TIDY_SCHEDULE As Boolean = True     ' 今後の予定欄(D11)で行事のない日を省く
+Private Const NAME_SRC_PATH As String = "週報作成_行事予定パス"
+Private Const NAME_PENDING As String = "週報作成_予約"      ' 後半の処理に渡す週番号・開始日
+Private Const NAME_NOTE As String = "週報作成_注記"         ' 完了メッセージに添える注記
+Private Const MAX_ROW_HEIGHT As Double = 409          ' Excel の行の高さの上限（ポイント）
+Private Const MIN_FONT_SIZE As Double = 6            ' 縮小するときのフォントの下限
+Private Const HEIGHT_MARGIN As Double = 1.1          ' 測った高さに持たせる余裕（画面と印刷の差の分）
+
+Private quietMode As Boolean     ' テスト用：True のときメッセージを出さない
+Private lastMessage As String
+
+'===============================================================================
+' メイン：週番号を聞いて週報シートを作る
+'===============================================================================
+Public Sub 週報作成()
+    ' 1) 週番号（既定値＝記入済みの最後の週の次）
+    Dim defWeek As Long
+    defWeek = LastFilledWeek() + 1
+
+    Dim ans As String, weekNo As Long
+    ans = InputBox("作成する週の番号を入力してください。", "週報作成", CStr(defWeek))
+    If ans = "" Then Exit Sub
+    ans = StrConv(ans, vbNarrow)
+    If Not IsNumeric(ans) Then
+        MsgBox "週の番号は数字で入力してください。", vbExclamation, "週報作成"
+        Exit Sub
+    End If
+    weekNo = CLng(ans)
+    If weekNo < 1 Then Exit Sub
+
+    ' 2) 週の開始日（月曜日）：前の週から計算して表示し、訂正できるようにする
+    Dim startDate As Date, note As String
+    If Not AskStartDate(weekNo, startDate, note) Then Exit Sub
+
+    ' 3) 行事予定ブックがすでに開いていれば、そのまま作る
+    Dim wbSrc As Workbook
+    Set wbSrc = FindOpenSource()
+    If Not wbSrc Is Nothing Then
+        FinishReport wbSrc, weekNo, startDate, note, False
+        Exit Sub
+    End If
+
+    ' 4) 開いていなければファイルを開く
+    '    Ctrl+Shift のショートカットで実行すると、Excel はファイルを開いた直後に
+    '    マクロを止めてしまうことがある。そこで、続きの処理（ContinueWeeklyReport）を
+    '    先に予約してから開く。止まっても止まらなくても、続きは予約から1回だけ動く。
+    Dim path As String
+    path = ChooseSourcePath()
+    If path = "" Then Exit Sub
+    SaveSourcePath path
+    SaveText NAME_PENDING, weekNo & "|" & CLng(startDate)
+    SaveText NAME_NOTE, Replace(note, vbLf, "\n")
+    Application.OnTime Now, "'" & ThisWorkbook.Name & "'!ContinueWeeklyReport"
+    Application.ScreenUpdating = False
+    Workbooks.Open Filename:=path, UpdateLinks:=0, ReadOnly:=True
+End Sub
+
+' 後半：開いた行事予定ブックから週報を作る（週報作成 から予約して呼ばれる）
+Public Sub ContinueWeeklyReport()
+    Dim s As String, p As Variant
+    s = LoadText(NAME_PENDING)
+    If s = "" Then Exit Sub                  ' 予約がなければ何もしない
+    SaveText NAME_PENDING, ""
+    p = Split(s, "|")
+    If UBound(p) < 1 Then Exit Sub
+
+    Dim weekNo As Long, startDate As Date, note As String, path As String
+    weekNo = CLng(p(0))
+    startDate = CDate(CLng(p(1)))
+    note = Replace(LoadText(NAME_NOTE), "\n", vbLf)
+    SaveText NAME_NOTE, ""
+    path = LoadSavedPath()
+
+    Dim wb As Workbook, wbSrc As Workbook
+    For Each wb In Application.Workbooks
+        If StrComp(wb.FullName, path, vbTextCompare) = 0 Then Set wbSrc = wb
+    Next wb
+    Application.ScreenUpdating = True
+    If wbSrc Is Nothing Then
+        ShowMessage "行事予定ブックを開けませんでした。" & vbLf & path, vbExclamation
+        SaveSourcePath ""
+        Exit Sub
+    End If
+    If Not IsSourceWorkbook(wbSrc) Then
+        ShowMessage "選んだファイルに「４月」～「３月」のシートが見つかりません。" & vbLf & wbSrc.Name, vbExclamation
+        wbSrc.Close SaveChanges:=False
+        SaveSourcePath ""
+        Exit Sub
+    End If
+    FinishReport wbSrc, weekNo, startDate, note, True
+End Sub
+
+Private Sub FinishReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, ByVal startDate As Date, _
+                         ByVal note As String, ByVal closeSrc As Boolean)
+    ThisWorkbook.Activate
+    Dim msg As String
+    msg = MakeWeeklyReport(wbSrc, weekNo, startDate, True)
+    If closeSrc Then wbSrc.Close SaveChanges:=False
+    ThisWorkbook.Activate
+    Application.ScreenUpdating = True
+    If msg <> "" Then ShowMessage msg & note, vbInformation
+End Sub
+
+Private Sub ShowMessage(ByVal msg As String, ByVal style As Long)
+    lastMessage = msg
+    If Not quietMode Then MsgBox msg, style, "週報作成"
+End Sub
+
+' 開始日を前の週から計算して表示し、訂正を受け付ける
+'   訂正なし（OK のみ）→ 計算した日付のまま
+'   訂正あり           → 入力した日付（月曜日でなければ、その週の月曜日）
+Private Function AskStartDate(ByVal weekNo As Long, ByRef result As Date, ByRef note As String) As Boolean
+    Dim calc As Date, prevNo As Long, prompt As String, defText As String
+    note = ""
+    If PrevWeekStart(weekNo, calc, prevNo) Then
+        defText = Format(calc, "yyyy/m/d")
+        prompt = "第" & weekNo & "週の開始日（月曜日）" & vbLf & vbLf & _
+                 "前の週（第" & prevNo & "週：" & Format(calc - 7 * (weekNo - prevNo), "m/d") & _
+                 "～）から計算すると " & Format(calc, "m/d") & "（" & WeekdayChar(calc) & "）です。" & vbLf & vbLf & _
+                 "長期休業などで違う場合は、正しい日付に直してください。" & vbLf & _
+                 "（例：2026/8/31　または　8/31）"
+    Else
+        defText = ""
+        prompt = "第" & weekNo & "週の開始日（月曜日）を入力してください。" & vbLf & _
+                 "（前の週のシートから日付を求められませんでした）" & vbLf & vbLf & _
+                 "（例：2026/8/31　または　8/31）"
+    End If
+
+    Dim s As String
+    s = InputBox(prompt, "週報作成：週の開始日", defText)
+    If s = "" Then Exit Function                         ' キャンセル
+    s = StrConv(Trim$(s), vbNarrow)
+
+    If defText <> "" And s = defText Then
+        result = calc                                    ' 訂正なし
+    Else
+        If Not IsDate(s) Then
+            MsgBox "日付として読み取れませんでした：" & s, vbExclamation, "週報作成"
+            Exit Function
+        End If
+        Dim d As Date
+        d = DateValue(s)
+        If InStr(s, "/") = InStrRev(s, "/") And defText <> "" Then
+            ' 「8/31」のように年を省略したときは、計算した日付に近い年を使う
+            d = DateSerial(Year(calc), Month(d), Day(d))
+            If d - calc > 180 Then d = DateSerial(Year(calc) - 1, Month(d), Day(d))
+            If calc - d > 180 Then d = DateSerial(Year(calc) + 1, Month(d), Day(d))
+        End If
+        result = MondayOf(d)
+        If result <> d Then
+            note = vbLf & vbLf & "※入力された " & Format(d, "m/d") & "（" & WeekdayChar(d) & _
+                   "）は月曜日ではないため、その週の月曜日 " & Format(result, "m/d") & " にしました。"
+        End If
+    End If
+    AskStartDate = True
+End Function
+
+'===============================================================================
+' 本体：週報シートを用意してデータを書き込む（戻り値＝完了メッセージ、中止時は ""）
+'===============================================================================
+Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, _
+                                 ByVal startDate As Date, ByVal askOverwrite As Boolean) As String
+    Dim ws As Worksheet
+    Set ws = FindSheet(ThisWorkbook, CStr(weekNo))
+
+    If ws Is Nothing Then
+        Dim wsGen As Worksheet
+        Set wsGen = FindSheet(ThisWorkbook, SHEET_GENPON)
+        If wsGen Is Nothing Then
+            MsgBox "「" & SHEET_GENPON & "」シートが見つかりません。", vbCritical, "週報作成"
+            Exit Function
+        End If
+        wsGen.Copy After:=LastWeekSheet()
+        Set ws = ActiveSheet
+        ws.Name = CStr(weekNo)
+        ws.Visible = xlSheetVisible
+    ElseIf askOverwrite Then
+        If Application.WorksheetFunction.CountA(ws.Range("G13:L43")) > 0 Then
+            If MsgBox("「" & ws.Name & "」シートにはすでにデータがあります。" & vbLf & _
+                      "行事予定から読み直して上書きしますか？" & vbLf & _
+                      "（G13:L43 の貼付データだけを書き換えます。お知らせ欄などはそのままです）", _
+                      vbYesNo + vbQuestion, "週報作成") <> vbYes Then Exit Function
+        End If
+    End If
+
+    Application.ScreenUpdating = False
+
+    ' 年度・月・週の初日
+    ws.Range("F12").Value = SchoolYear(startDate)
+    ws.Range("H12").Value = Month(startDate)
+    ws.Range("F13").ClearContents
+    ws.Range("F13").Value = startDate
+
+    ' 31日分を転記
+    Dim i As Long, d As Date, r As Long, wsM As Worksheet, curMonth As Long
+    Dim missing As String
+    curMonth = 0
+    ws.Range("G" & FIRST_ROW & ":L" & FIRST_ROW + DAYS_TO_COPY - 1).ClearContents
+    For i = 0 To DAYS_TO_COPY - 1
+        d = startDate + i
+        If Month(d) <> curMonth Then
+            curMonth = Month(d)
+            Set wsM = MonthSheet(wbSrc, curMonth)
+            If wsM Is Nothing Then missing = missing & " " & curMonth & "月"
+        End If
+        r = FIRST_ROW + i
+        ws.Cells(r, "G").Value = Day(d)
+        ws.Cells(r, "H").Value = Mid("日月火水木金土", Weekday(d, vbSunday), 1)
+        If Not wsM Is Nothing Then
+            Dim sr As Long
+            sr = SRC_FIRST_ROW + Day(d) - 1
+            ws.Cells(r, "I").Value = CleanText(wsM.Cells(sr, "C"))   ' 日直
+            ws.Cells(r, "J").Value = CleanText(wsM.Cells(sr, "D"))   ' 校内行事
+            ws.Cells(r, "K").Value = CleanText(wsM.Cells(sr, "E"))   ' 校外行事
+            ws.Cells(r, "L").Value = CleanText(wsM.Cells(sr, "F"))   ' 提出文書・備考
+        End If
+    Next i
+
+    ' 「追加情報」シートのキーワードで校内行事を編集する（シートがなければ何もしない）
+    Dim nReplaced As Long
+    nReplaced = ApplyExtraInfo(ws)
+
+    If TIDY_SCHEDULE Then TidyScheduleFormulas ws
+    KeepOutsideSpaces ws
+    FitRowHeights ws
+
+    Application.ScreenUpdating = True
+    ws.Activate
+    ws.Range("A1").Select
+
+    MakeWeeklyReport = "第" & weekNo & "週（" & Format(startDate, "m/d") & "～" & _
+                       Format(startDate + 6, "m/d") & "）の週報を作成しました。" & vbLf & _
+                       "行事予定ブック：" & wbSrc.Name
+    If nReplaced > 0 Then
+        MakeWeeklyReport = MakeWeeklyReport & vbLf & _
+            "「" & SHEET_EXTRA & "」で校内行事を " & nReplaced & " か所編集しました。"
+    End If
+    If missing <> "" Then
+        MakeWeeklyReport = MakeWeeklyReport & vbLf & vbLf & _
+            "※次の月のシートが行事予定ブックに見つからず、空欄にしています：" & missing
+    End If
+End Function
+
+'===============================================================================
+' 補助
+'===============================================================================
+
+' 前の週の開始日＋7日を返す（見つかった前の週の番号も返す）
+'   さかのぼって最初に正しい開始日を持つ週を使う（空のひな形シートは飛ばす）
+Private Function PrevWeekStart(ByVal weekNo As Long, ByRef result As Date, ByRef prevNo As Long) As Boolean
+    Dim k As Long, ws As Worksheet, d As Date
+    For k = weekNo - 1 To 1 Step -1
+        Set ws = FindSheet(ThisWorkbook, CStr(k))
+        If Not ws Is Nothing Then
+            If SheetStartDate(ws, d) Then
+                result = d + 7 * (weekNo - k)
+                prevNo = k
+                PrevWeekStart = True
+                Exit Function
+            End If
+        End If
+    Next k
+End Function
+
+' 週シートの開始日（月曜日）。古い様式の「週初日」(H2/G2) → F13 の順に探す
+'   月曜日で、今年度の日付であるものだけを正しい開始日とみなす
+Private Function SheetStartDate(ByVal ws As Worksheet, ByRef result As Date) As Boolean
+    Dim addr As Variant, v As Variant
+    For Each addr In Array("H2", "G2", "F13")
+        v = ws.Range(addr).Value
+        If Not IsError(v) Then
+            ' 日付、または日付を表す数値（2000/1/1～2099/12/31）だけを対象にする
+            If VarType(v) = vbDate Or ((VarType(v) = vbDouble Or VarType(v) = vbLong _
+                                       Or VarType(v) = vbInteger) And v >= 36526 And v <= 73415) Then
+                If Weekday(CDate(v), vbMonday) = 1 And IsThisSchoolYear(CDate(v)) Then
+                    result = CDate(v)
+                    SheetStartDate = True
+                    Exit Function
+                End If
+            End If
+        End If
+    Next addr
+End Function
+
+' 原本 F12 の年度と同じ年度の日付か（F12 が読めなければ判定しない）
+Private Function IsThisSchoolYear(ByVal d As Date) As Boolean
+    Dim ws As Worksheet, y As Variant
+    IsThisSchoolYear = True
+    Set ws = FindSheet(ThisWorkbook, SHEET_GENPON)
+    If ws Is Nothing Then Exit Function
+    y = ws.Range("F12").Value
+    If IsNumeric(y) And Not IsEmpty(y) Then IsThisSchoolYear = (SchoolYear(d) = CLng(y))
+End Function
+
+' 記入済み（G13:L43 にデータがある）週シートのうち、番号が最大のもの
+Private Function LastFilledWeek() As Long
+    Dim ws As Worksheet, n As Long
+    For Each ws In ThisWorkbook.Worksheets
+        If IsNumeric(ws.Name) Then
+            n = CLng(ws.Name)
+            If n > LastFilledWeek Then
+                If Application.WorksheetFunction.CountA(ws.Range("G13:L43")) > 0 Then LastFilledWeek = n
+            End If
+        End If
+    Next ws
+End Function
+
+Private Function MondayOf(ByVal d As Date) As Date
+    MondayOf = d - (Weekday(d, vbMonday) - 1)
+End Function
+
+Private Function WeekdayChar(ByVal d As Date) As String
+    WeekdayChar = Mid("日月火水木金土", Weekday(d, vbSunday), 1)
+End Function
+
+' 開いているブックの中から行事予定ブックを探す
+Private Function FindOpenSource() As Workbook
+    Dim wb As Workbook
+    For Each wb In Application.Workbooks
+        If Not wb Is ThisWorkbook Then
+            If IsSourceWorkbook(wb) Then
+                Set FindOpenSource = wb
+                Exit Function
+            End If
+        End If
+    Next wb
+End Function
+
+' 行事予定ファイルの場所：前回のパス（ファイルが残っていれば）→ なければ選んでもらう
+Private Function ChooseSourcePath() As String
+    Dim path As String
+    path = LoadSavedPath()
+    If path <> "" Then
+        If Dir(path) = "" Then path = ""
+    End If
+    If path = "" Then
+        Dim f As Variant
+        f = Application.GetOpenFilename("Excel ファイル (*.xlsx;*.xlsm;*.xls),*.xlsx;*.xlsm;*.xls", , _
+                                        "年間行事予定（月別のワークシート）のファイルを選んでください")
+        If VarType(f) = vbBoolean Then Exit Function
+        path = CStr(f)
+    End If
+    ChooseSourcePath = path
+End Function
+
+Private Function IsSourceWorkbook(ByVal wb As Workbook) As Boolean
+    IsSourceWorkbook = Not (MonthSheet(wb, 4) Is Nothing) And Not (MonthSheet(wb, 12) Is Nothing)
+End Function
+
+' 月シート（「１２月」のような全角、または「12月」）を返す
+Private Function MonthSheet(ByVal wb As Workbook, ByVal m As Long) As Worksheet
+    Set MonthSheet = FindSheet(wb, StrConv(CStr(m), vbWide) & "月")
+    If MonthSheet Is Nothing Then Set MonthSheet = FindSheet(wb, CStr(m) & "月")
+End Function
+
+Private Function FindSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
+    Dim ws As Worksheet
+    For Each ws In wb.Worksheets
+        If ws.Name = sheetName Then
+            Set FindSheet = ws
+            Exit Function
+        End If
+    Next ws
+End Function
+
+' 数字名の週シートのうち番号が最大のもの（なければ最後のシート）
+Private Function LastWeekSheet() As Worksheet
+    Dim ws As Worksheet, best As Worksheet, n As Long, bestN As Long
+    bestN = -1
+    For Each ws In ThisWorkbook.Worksheets
+        If IsNumeric(ws.Name) Then
+            n = CLng(ws.Name)
+            If n > bestN Then bestN = n: Set best = ws
+        End If
+    Next ws
+    If best Is Nothing Then Set best = ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count)
+    Set LastWeekSheet = best
+End Function
+
+' 空の数式が返す 0 やエラー値を空欄にする
+Private Function CleanText(ByVal c As Range) As String
+    Dim v As Variant
+    v = c.Value
+    If IsError(v) Or IsEmpty(v) Then Exit Function
+    If VarType(v) = vbString Then
+        If Trim$(v) = "0" Then Exit Function
+        CleanText = v
+    ElseIf IsNumeric(v) Then
+        If v = 0 Then Exit Function
+        CleanText = CStr(v)
+    Else
+        CleanText = CStr(v)
+    End If
+End Function
+
+Private Function SchoolYear(ByVal d As Date) As Long
+    If Month(d) < 4 Then SchoolYear = Year(d) - 1 Else SchoolYear = Year(d)
+End Function
+
+' 今後の予定（F20:F43 → G11 → D11）で、校内行事のない日を表示しないようにする
+Private Sub TidyScheduleFormulas(ByVal ws As Worksheet)
+    Dim r As Long, parts As String
+    For r = 20 To 43
+        ws.Range("F" & r).Formula = "=IF(J" & r & "="""","""",G" & r & "&""(""&H" & r & _
+            "&"")" & ChrW(&H3000) & ChrW(&H3007) & """&SUBSTITUTE(J" & r & ",""" & ChrW(&H3000) & _
+            """,CHAR(10)&""" & ChrW(&H3007) & """))"
+        If r <= 30 Then
+            parts = parts & ",SUBSTITUTE(F" & r & ",CHAR(10),"""")"
+        Else
+            parts = parts & ",F" & r
+        End If
+    Next r
+    ws.Range("G11").Formula = "=TEXTJOIN(CHAR(10),TRUE" & parts & ")"
+End Sub
+
+' 校外行事欄（D4:D10）で全角スペースを消さないようにする
+'  元の数式： =IF(K13="","",SUBSTITUTE(K13,"　","")&CHAR(10))&IF(J4="","",J4)
+'  変更後　： =IF(K13="","",K13&CHAR(10))&IF(J4="","",J4)
+Private Sub KeepOutsideSpaces(ByVal ws As Worksheet)
+    Dim i As Long
+    For i = 0 To 6
+        ws.Range("D" & (4 + i)).Formula = "=IF(K" & (13 + i) & "="""","""",K" & (13 + i) & _
+            "&CHAR(10))&IF(J" & (4 + i) & "="""","""",J" & (4 + i) & ")"
+    Next i
+End Sub
+
+'===============================================================================
+' 追加情報：校内行事に特定のキーワードがあれば、情報を追加・置き換える
+'
+'  「追加情報」シート（1行目は見出し、2行目から）
+'     A列 キーワード   例：ALT＊
+'     B列 編集後       例：ALT＊（②３年③４年④６年⑤５年）
+'  ・キーワードの「＊」は番号（数字・丸数字）に当てはまり、編集後の「＊」に同じ番号を入れる
+'       ALT⑥ → ALT⑥（②３年③４年④６年⑤５年）
+'  ・「＊」がないキーワードは、そのまま編集後の文字列に置き換える
+'  ・キーワードは行事名の先頭から一致したものだけが対象（「代表委員会」は「委員会＊」に一致しない）
+'  ・すでに編集済みのものは二重に付け足さない
+'===============================================================================
+
+' 表示中の週シートに、追加情報をもう一度反映する（追加情報シートを直したあとなど）
+Public Sub 追加情報反映()
+    If FindSheet(ThisWorkbook, SHEET_EXTRA) Is Nothing Then
+        CreateExtraInfoSheet
+        MsgBox "「" & SHEET_EXTRA & "」シートを作りました。" & vbLf & _
+               "A列にキーワード、B列に編集後の文字列を入力してから、もう一度実行してください。", _
+               vbInformation, "週報作成"
+        Exit Sub
+    End If
+    If Not IsNumeric(ActiveSheet.Name) Then
+        MsgBox "週のシート（名前が番号のシート）を表示してから実行してください。", vbExclamation, "週報作成"
+        Exit Sub
+    End If
+    Dim ws As Worksheet, n As Long
+    Set ws = ActiveSheet
+    Application.ScreenUpdating = False
+    n = ApplyExtraInfo(ws)
+    If n > 0 Then FitRowHeights ws
+    Application.ScreenUpdating = True
+    MsgBox "校内行事を " & n & " か所編集しました。", vbInformation, "週報作成"
+End Sub
+
+' 週シートの校内行事（J13:J43）に追加情報を反映し、編集した数を返す
+Private Function ApplyExtraInfo(ByVal ws As Worksheet) As Long
+    Dim wsX As Worksheet
+    Set wsX = FindSheet(ThisWorkbook, SHEET_EXTRA)
+    If wsX Is Nothing Then Exit Function
+
+    ' キーワード表を読む
+    Dim lastRow As Long, r As Long, nRule As Long
+    Dim keys() As String, edits() As String
+    lastRow = wsX.UsedRange.Row + wsX.UsedRange.Rows.Count - 1
+    If lastRow < 1 Then Exit Function
+    ReDim keys(1 To lastRow): ReDim edits(1 To lastRow)
+    For r = 1 To lastRow
+        Dim k As String
+        k = Trim$(CStr(wsX.Cells(r, "A").Value))
+        If k <> "" And k <> "キーワード" Then
+            nRule = nRule + 1
+            keys(nRule) = k
+            edits(nRule) = CStr(wsX.Cells(r, "B").Value)
+        End If
+    Next r
+    If nRule = 0 Then Exit Function
+
+    ' 校内行事の各セルに順に当てはめる
+    Dim i As Long, t As String, cnt As Long, total As Long
+    For r = FIRST_ROW To FIRST_ROW + DAYS_TO_COPY - 1
+        t = CStr(ws.Cells(r, "J").Value)
+        If t <> "" Then
+            cnt = 0
+            For i = 1 To nRule
+                t = ApplyOneRule(t, keys(i), edits(i), cnt)
+            Next i
+            If cnt > 0 Then
+                ws.Cells(r, "J").Value = t
+                total = total + cnt
+            End If
+        End If
+    Next r
+    ApplyExtraInfo = total
+End Function
+
+' 1つのキーワードを文字列 t に当てはめる（編集した数を cnt に足す）
+Public Function ApplyOneRule(ByVal t As String, ByVal keyWord As String, ByVal edited As String, _
+                             ByRef cnt As Long) As String
+    Const STAR As String = "＊"
+    keyWord = Replace(keyWord, "*", STAR)
+    edited = Replace(edited, "*", STAR)
+
+    Dim wild As Boolean, kPre As String, kPost As String, ePre As String, ePost As String
+    Dim sp As Long
+    sp = InStr(keyWord, STAR)
+    wild = (sp > 0)
+    If wild Then
+        kPre = Left$(keyWord, sp - 1)
+        kPost = Mid$(keyWord, sp + 1)
+    Else
+        kPre = keyWord
+    End If
+    ApplyOneRule = t
+    If kPre = "" Then Exit Function                ' 「＊」で始まるキーワードは扱わない
+
+    sp = InStr(edited, STAR)
+    If wild And sp > 0 Then
+        ePre = Left$(edited, sp - 1)
+        ePost = Mid$(edited, sp + 1)
+    End If
+
+    Dim pos As Long, p As Long, j As Long, endPos As Long, ok As Boolean
+    Dim cap As String, rep As String
+    pos = 1
+    Do
+        p = InStr(pos, t, kPre)
+        If p = 0 Then Exit Do
+        ok = IsLeftBoundary(t, p)
+        j = p + Len(kPre)
+        cap = ""
+        If ok And wild Then
+            Do While j <= Len(t)
+                If Not IsNumberChar(Mid$(t, j, 1)) Then Exit Do
+                j = j + 1
+            Loop
+            cap = Mid$(t, p + Len(kPre), j - p - Len(kPre))
+            If cap = "" Then ok = False                    ' 番号がなければ対象外
+            If ok And kPost <> "" Then
+                If Mid$(t, j, Len(kPost)) = kPost Then j = j + Len(kPost) Else ok = False
+            End If
+        End If
+        endPos = j
+        If ok Then ok = IsRightBoundary(t, endPos)
+
+        If ok Then
+            If wild And sp > 0 Then rep = ePre & cap & ePost Else rep = edited
+            If Mid$(t, p, Len(rep)) = rep Then
+                pos = p + Len(rep)                         ' すでに編集済み
+            Else
+                t = Left$(t, p - 1) & rep & Mid$(t, endPos)
+                cnt = cnt + 1
+                pos = p + Len(rep)
+            End If
+        Else
+            pos = p + 1
+        End If
+    Loop
+    ApplyOneRule = t
+End Function
+
+' キーワードの前が行事の区切り（先頭・スペース・改行・〇・＊・、）か
+Private Function IsLeftBoundary(ByVal t As String, ByVal p As Long) As Boolean
+    If p <= 1 Then IsLeftBoundary = True: Exit Function
+    IsLeftBoundary = InStr(ChrW(&H3000) & " " & vbLf & vbCr & "〇○＊*、，,・", Mid$(t, p - 1, 1)) > 0
+End Function
+
+' キーワードの後ろが行事の区切り（末尾・スペース・改行・〇・括弧・＊・・・、）か
+Private Function IsRightBoundary(ByVal t As String, ByVal p As Long) As Boolean
+    If p > Len(t) Then IsRightBoundary = True: Exit Function
+    IsRightBoundary = InStr(ChrW(&H3000) & " " & vbLf & vbCr & "〇○（(＊*・、，,", Mid$(t, p, 1)) > 0
+End Function
+
+' 番号の文字か（半角・全角数字、丸数字 ①～⑳ と 21～50 の丸数字、白抜き・黒丸の数字）
+Private Function IsNumberChar(ByVal ch As String) As Boolean
+    Dim c As Long
+    c = AscW(ch)
+    If c < 0 Then c = c + 65536
+    Select Case c
+        Case &H30& To &H39&, &HFF10& To &HFF19&, &H2460& To &H2473&, &H3251& To &H325F&, _
+             &H32B1& To &H32BF&, &H2776& To &H277F&, &H2780& To &H2789&
+            IsNumberChar = True
+    End Select
+End Function
+
+Private Sub CreateExtraInfoSheet()
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    ws.Name = SHEET_EXTRA
+    ws.Range("A1").Value = "キーワード"
+    ws.Range("B1").Value = "編集後"
+    ws.Range("C1").Value = "メモ"
+    ws.Range("A2").Value = "ALT＊"
+    ws.Range("B2").Value = "ALT＊（②３年③４年④６年⑤５年）"
+    ws.Range("C2").Value = "＊は番号（数字・丸数字）。ALT⑥ → ALT⑥（②３年③４年④６年⑤５年）"
+    ws.Range("A1:C1").Font.Bold = True
+    ws.Columns("A").ColumnWidth = 20
+    ws.Columns("B").ColumnWidth = 45
+    ws.Columns("C").ColumnWidth = 60
+End Sub
+
+' 手で書き足したあとに、表示中の週シートの行の高さだけを調整し直す
+Public Sub 行の高さ調整()
+    If Not IsNumeric(ActiveSheet.Name) Then
+        MsgBox "週のシート（名前が番号のシート）を表示してから実行してください。", vbExclamation, "週報作成"
+        Exit Sub
+    End If
+    Application.ScreenUpdating = False
+    FitRowHeights ActiveSheet
+    Application.ScreenUpdating = True
+End Sub
+
+' C4:E8（A・B 列も含む）と D11 の内容がすべて見えるように行の高さを調整する。
+'   ・行の高さ＝その行のセルが全部表示できる高さの最大値（原本の高さより低くはしない）
+'   ・上限 409 ポイントでも入りきらないセルは、フォントを 0.5 ずつ小さくする
+Private Sub FitRowHeights(ByVal ws As Worksheet)
+    Dim wsGen As Worksheet, tmp As Worksheet, r As Long
+    Set wsGen = FindSheet(ThisWorkbook, SHEET_GENPON)
+    Application.Calculate                ' 書き込んだデータで数式を計算し終えてから測る
+
+    ' 高さを測るための一時シート（最後に削除）
+    Set tmp = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    For r = 4 To 8
+        FitOneRow ws, wsGen, tmp, r, Array("A", "B", "C", "D", "E")
+    Next r
+    FitOneRow ws, wsGen, tmp, 11, Array("D")
+
+    Application.DisplayAlerts = False
+    tmp.Delete
+    Application.DisplayAlerts = True
+    ws.Activate
+End Sub
+
+Private Sub FitOneRow(ByVal ws As Worksheet, ByVal wsGen As Worksheet, ByVal tmp As Worksheet, _
+                      ByVal r As Long, ByVal cols As Variant)
+    Dim need As Double, h As Double, c As Variant
+    If wsGen Is Nothing Then need = ws.Rows(r).RowHeight Else need = wsGen.Rows(r).RowHeight
+    For Each c In cols
+        h = FitOneCell(ws.Range(c & r), wsGen, tmp)
+        If h > need Then need = h
+    Next c
+    If need > MAX_ROW_HEIGHT Then need = MAX_ROW_HEIGHT
+    ws.Rows(r).RowHeight = need
+End Sub
+
+' セル（結合セルなら結合範囲全体）を全部表示するのに必要な高さを返す。
+' 上限を超えるときはフォントを小さくして収める。
+Private Function FitOneCell(ByVal cell As Range, ByVal wsGen As Worksheet, ByVal tmp As Worksheet) As Double
+    Dim area As Range, topCell As Range, v As Variant, txt As String
+    Set area = cell.MergeArea
+    Set topCell = area.Cells(1, 1)
+
+    ' フォントサイズは原本のサイズから測り直す（作り直したときに小さいままにならないように）
+    Dim size As Double
+    size = topCell.Font.Size
+    If Not wsGen Is Nothing Then size = wsGen.Range(topCell.Address).Font.Size
+    If area.Font.Size <> size Then area.Font.Size = size
+
+    v = topCell.Value
+    If IsError(v) Then Exit Function
+    txt = CStr(v)
+    If txt = "" Then Exit Function
+
+    ' 一時シートの A1 を同じ幅・同じフォントにして、行の高さを自動調整して測る
+    Dim w As Double, i As Long
+    For i = 1 To area.Columns.Count
+        w = w + area.Columns(i).ColumnWidth
+    Next i
+    If w > 255 Then w = 255
+    tmp.Columns(1).ColumnWidth = w
+    With tmp.Range("A1")
+        .NumberFormat = "@"
+        .Value = txt
+        .WrapText = True
+        .Font.Name = topCell.Font.Name
+        .Font.Bold = topCell.Font.Bold
+        .Font.Italic = topCell.Font.Italic
+    End With
+
+    Dim h As Double
+    Do
+        ' フォントを変えるたびに文字を入れ直し、行を低くしてから自動調整する
+        tmp.Range("A1").ClearContents
+        tmp.Range("A1").Font.Size = size
+        tmp.Range("A1").Value = txt
+        tmp.Rows(1).RowHeight = 12
+        tmp.Rows(1).AutoFit
+        h = tmp.Rows(1).RowHeight * HEIGHT_MARGIN + 2
+        ' 余裕を含めて上限（から1ポイント以内）に届くなら入りきっていない → 小さくする
+        If h < MAX_ROW_HEIGHT - 1 Or size <= MIN_FONT_SIZE Then Exit Do
+        size = size - 0.5
+    Loop
+    If area.Font.Size <> size Then area.Font.Size = size
+    FitOneCell = h
+End Function
+
+Private Function LoadSavedPath() As String
+    LoadSavedPath = LoadText(NAME_SRC_PATH)
+End Function
+
+Private Sub SaveSourcePath(ByVal path As String)
+    SaveText NAME_SRC_PATH, path
+End Sub
+
+' ブックの非表示の「名前」に文字列を保存する（空文字なら削除）
+Private Sub SaveText(ByVal key As String, ByVal value As String)
+    On Error Resume Next
+    ThisWorkbook.Names(key).Delete
+    On Error GoTo 0
+    If value = "" Then Exit Sub
+    ThisWorkbook.Names.Add Name:=key, _
+        RefersTo:="=""" & Replace(value, """", """""") & """", Visible:=False
+End Sub
+
+Private Function LoadText(ByVal key As String) As String
+    Dim s As String
+    On Error Resume Next
+    s = ThisWorkbook.Names(key).RefersTo
+    If Err.Number <> 0 Then Exit Function
+    On Error GoTo 0
+    ' RefersTo は ="..." の形
+    If Left$(s, 2) = "=""" Then s = Mid$(s, 3, Len(s) - 3)
+    LoadText = Replace(s, """""", """")
+End Function

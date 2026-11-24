@@ -247,6 +247,7 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
 
     If TIDY_SCHEDULE Then TidyScheduleFormulas ws
     KeepOutsideSpaces ws
+    SetInsideFormulas ws
     MergeWeekendRows ws
     FitRowHeights ws
 
@@ -440,6 +441,27 @@ Private Sub TidyScheduleFormulas(ByVal ws As Worksheet)
     ws.Range("G11").Formula = "=TEXTJOIN(CHAR(10),TRUE" & parts & ")"
 End Sub
 
+' 校内行事欄（C4:C8）：「〇」の行事と「＊」の補足を1つずつ改行して表示する
+'   元の数式： =IF(J13="","","〇"&SUBSTITUTE(J13,"　","〇")&CHAR(10))&IF(I4="","","○"&I4)
+'   変更後　： J13 の全角スペースを「改行＋〇」、「＊」を「改行＋＊」に置き換え、
+'              「〇」だけの行（「＊」で始まる補足の前など）と空行を取り除く
+Private Sub SetInsideFormulas(ByVal ws As Worksheet)
+    Dim i As Long
+    For i = 0 To 4                           ' 月～金（土日の行は MergeWeekendRows で作る）
+        ws.Range("C" & (4 + i)).Formula = "=IF(J" & (13 + i) & "="""",""""," & InsideExpr("J" & (13 + i)) & _
+            "&CHAR(10))&IF(I" & (4 + i) & "="""","""",""○""&I" & (4 + i) & ")"
+    Next i
+End Sub
+
+' 校内行事のセル（J列）を「〇行事」「＊補足」の1行ずつに分ける式
+Private Function InsideExpr(ByVal ref As String) As String
+    Dim fw As String, inner As String
+    fw = ChrW(&H3000)                        ' 全角スペース（行事の区切り）
+    ' 「＊」の前の半角・全角スペースは取ってから改行する
+    inner = "SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(" & ref & ","" ＊"",""＊""),""" & fw & "＊"",""＊""),""＊"",CHAR(10)&""＊""),""" & fw & """,CHAR(10)&""〇"")"
+    InsideExpr = "SUBSTITUTE(SUBSTITUTE(""〇""&" & inner & ",""〇""&CHAR(10),""""),CHAR(10)&CHAR(10),CHAR(10))"
+End Function
+
 ' 土日の行（9・10行目）：校内行事・校外行事・備考を C 列にまとめ、C:E を結合して左寄せにする
 '   C9 = 校内行事（〇…、○事前入力）・校外行事（…、事前入力）・備考（〆…、〆事前入力）のうち
 '        値のあるものだけを改行でつないだもの（元の C9・D9・E9 の数式と同じ中身）
@@ -449,7 +471,7 @@ Private Sub MergeWeekendRows(ByVal ws As Worksheet)
     For r = 9 To 10
         d = r + 9                            ' 貼付データの行（9行目→18行目、10行目→19行目）
         f = "=TEXTJOIN(CHAR(10),TRUE," & _
-            "IF(J" & d & "="""","""",""〇""&SUBSTITUTE(J" & d & ",""" & fw & """,""〇""))," & _
+            "IF(J" & d & "="""",""""," & InsideExpr("J" & d) & ")," & _
             "IF(I" & r & "="""","""",""○""&I" & r & ")," & _
             "K" & d & ",J" & r & "," & _
             "IF(L" & d & "="""","""",""〆""&SUBSTITUTE(L" & d & ",""" & fw & """,""〆" & fw & """))," & _

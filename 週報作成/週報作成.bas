@@ -246,6 +246,7 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
 
     If TIDY_SCHEDULE Then TidyScheduleFormulas ws
     KeepOutsideSpaces ws
+    MergeWeekendRows ws
     FitRowHeights ws
 
     Application.ScreenUpdating = True
@@ -437,12 +438,38 @@ Private Sub TidyScheduleFormulas(ByVal ws As Worksheet)
     ws.Range("G11").Formula = "=TEXTJOIN(CHAR(10),TRUE" & parts & ")"
 End Sub
 
-' 校外行事欄（D4:D10）で全角スペースを消さないようにする
+' 土日の行（9・10行目）：校内行事・校外行事・備考を C 列にまとめ、C:E を結合して左寄せにする
+'   C9 = 校内行事（〇…、○事前入力）・校外行事（…、事前入力）・備考（〆…、〆事前入力）のうち
+'        値のあるものだけを改行でつないだもの（元の C9・D9・E9 の数式と同じ中身）
+Private Sub MergeWeekendRows(ByVal ws As Worksheet)
+    Dim r As Long, d As Long, fw As String, f As String
+    fw = ChrW(&H3000)                        ' 全角スペース
+    For r = 9 To 10
+        d = r + 9                            ' 貼付データの行（9行目→18行目、10行目→19行目）
+        f = "=TEXTJOIN(CHAR(10),TRUE," & _
+            "IF(J" & d & "="""","""",""〇""&SUBSTITUTE(J" & d & ",""" & fw & """,""〇""))," & _
+            "IF(I" & r & "="""","""",""○""&I" & r & ")," & _
+            "K" & d & ",J" & r & "," & _
+            "IF(L" & d & "="""","""",""〆""&SUBSTITUTE(L" & d & ",""" & fw & """,""〆" & fw & """))," & _
+            "IF(K" & r & "="""","""",""〆""&K" & r & "))"
+        With ws.Range("C" & r & ":E" & r)
+            If .MergeCells Then .UnMerge
+            ws.Range("D" & r & ":E" & r).ClearContents
+            ws.Range("C" & r).Formula = f
+            .Merge
+            .HorizontalAlignment = xlLeft
+            .VerticalAlignment = xlTop
+            .WrapText = True
+        End With
+    Next r
+End Sub
+
+' 校外行事欄（D4:D8）で全角スペースを消さないようにする
 '  元の数式： =IF(K13="","",SUBSTITUTE(K13,"　","")&CHAR(10))&IF(J4="","",J4)
 '  変更後　： =IF(K13="","",K13&CHAR(10))&IF(J4="","",J4)
 Private Sub KeepOutsideSpaces(ByVal ws As Worksheet)
     Dim i As Long
-    For i = 0 To 6
+    For i = 0 To 4                           ' 月～金（土日の行は MergeWeekendRows で作る）
         ws.Range("D" & (4 + i)).Formula = "=IF(K" & (13 + i) & "="""","""",K" & (13 + i) & _
             "&CHAR(10))&IF(J" & (4 + i) & "="""","""",J" & (4 + i) & ")"
     Next i
@@ -640,7 +667,7 @@ Public Sub 行の高さ調整()
     Application.ScreenUpdating = True
 End Sub
 
-' C4:E8（A・B 列も含む）と D11 の内容がすべて見えるように行の高さを調整する。
+' C4:E8（A・B 列も含む）、土日の C9・C10、D11 の内容がすべて見えるように行の高さを調整する。
 '   ・行の高さ＝その行のセルが全部表示できる高さの最大値（原本の高さより低くはしない）
 '   ・上限 409 ポイントでも入りきらないセルは、フォントを 0.5 ずつ小さくする
 Private Sub FitRowHeights(ByVal ws As Worksheet)
@@ -652,6 +679,9 @@ Private Sub FitRowHeights(ByVal ws As Worksheet)
     Set tmp = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
     For r = 4 To 8
         FitOneRow ws, wsGen, tmp, r, Array("A", "B", "C", "D", "E")
+    Next r
+    For r = 9 To 10                          ' 土日（C:E は結合セル）
+        FitOneRow ws, wsGen, tmp, r, Array("A", "B", "C")
     Next r
     FitOneRow ws, wsGen, tmp, 11, Array("D")
 

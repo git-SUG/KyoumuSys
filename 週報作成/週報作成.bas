@@ -443,9 +443,19 @@ Private Sub TidyScheduleFormulas(ByVal ws As Worksheet)
     ws.Range("G11").Formula = "=TEXTJOIN(CHAR(10),TRUE" & parts & ")"
 End Sub
 
-' 今後の予定用：校内行事のセル（J列）の各行事に「〇」を付けて改行で区切る式（「＊」の前には付けない）
+' 今後の予定用：校内行事のセル（J列）の各行事に「〇」を付けて改行で区切る式
+'   ・「＊」で始まる行事には「〇」を付けない
+'   ・行事名の途中の「＊」は、前に全角スペースを入れる（クラブ③＊… → クラブ③　＊…）
+'   （先頭に改行を1つ付けて「行頭の＊」と「途中の＊」を区別し、最後に MID で取り除く）
 Private Function ScheduleExpr(ByVal ref As String) As String
-    ScheduleExpr = "SUBSTITUTE(""〇""&SUBSTITUTE(" & ref & ",""" & ChrW(&H3000) & """,CHAR(10)&""〇""),""〇＊"",""＊"")"
+    Dim fw As String, x As String
+    fw = ChrW(&H3000)
+    x = "SUBSTITUTE(" & ref & ","" ＊"",""＊"")"                                   ' 「＊」の前の半角スペースを取る
+    x = "CHAR(10)&""〇""&SUBSTITUTE(" & x & ",""" & fw & """,CHAR(10)&""〇"")"    ' 行事ごとに改行＋〇
+    x = "SUBSTITUTE(" & x & ",""〇＊"",""＊"")"                                    ' 「＊」で始まる行事は〇なし
+    x = "SUBSTITUTE(" & x & ",""＊"",""" & fw & "＊"")"                            ' 「＊」の前に全角スペース
+    x = "SUBSTITUTE(" & x & ",CHAR(10)&""" & fw & "＊"",CHAR(10)&""＊"")"         ' 行頭の「＊」は元に戻す
+    ScheduleExpr = "MID(" & x & ",2,32767)"                                        ' 先頭の改行を取る
 End Function
 
 ' 校内行事の区切り（全角スペース）を整える：続いたものは1つに、先頭・末尾のものと改行は取る

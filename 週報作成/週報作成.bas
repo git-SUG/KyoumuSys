@@ -235,7 +235,7 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
             sr = SRC_FIRST_ROW + Day(d) - 1
             ws.Cells(r, "I").Value = CleanText(wsM.Cells(sr, "C"))   ' 日直
             ws.Cells(r, "J").Value = CleanText(wsM.Cells(sr, "D"))   ' 校内行事
-            ws.Cells(r, "K").Value = CleanText(wsM.Cells(sr, "E"))   ' 校外行事
+            ws.Cells(r, "K").Value = BreakBeforeDetail(CleanText(wsM.Cells(sr, "E")))   ' 校外行事
             ws.Cells(r, "L").Value = CleanText(wsM.Cells(sr, "F"))   ' 提出文書・備考
         End If
     Next i
@@ -426,7 +426,8 @@ End Function
 Private Sub TidyScheduleFormulas(ByVal ws As Worksheet)
     Dim r As Long, parts As String
     For r = 20 To 43
-        ws.Range("F" & r).Formula = "=IF(J" & r & "="""","""",G" & r & "&""(""&H" & r & _
+        ' 日付が1桁なら前に半角スペースを入れて、2桁の日付と「(」の位置をそろえる
+        ws.Range("F" & r).Formula = "=IF(J" & r & "="""","""",IF(G" & r & "<10,"" "","""")&G" & r & "&""(""&H" & r & _
             "&"")" & ChrW(&H3000) & ChrW(&H3007) & """&SUBSTITUTE(J" & r & ",""" & ChrW(&H3000) & _
             """,CHAR(10)&""" & ChrW(&H3007) & """))"
         If r <= 30 Then
@@ -464,6 +465,47 @@ Private Sub MergeWeekendRows(ByVal ws As Worksheet)
     Next r
 End Sub
 
+' 校外行事：詳細を表す「（…）」の前で改行する（各行の最初の該当する括弧だけ）
+'   例：第１３回共同実施（１３：３０　新島小　池林）
+'    → 第１３回共同実施
+'      　（１３：３０　新島小　池林）
+'   詳細の括弧＝中に全角スペース・「：」・「:」・「、」のどれかを含むもの
+'   （「（他校研修）」「（佐原区）」のような名前の一部の括弧では改行しない）
+Private Function BreakBeforeDetail(ByVal t As String) As String
+    Const INDENT As String = "　"           ' 改行後の行頭に入れる文字（不要なら "" にする）
+    Dim lines As Variant, i As Long, ln As String, p As Long, q As Long
+    Dim depth As Long, inner As String, head As String
+    If t = "" Then Exit Function
+    lines = Split(t, vbLf)
+    For i = LBound(lines) To UBound(lines)
+        ln = lines(i)
+        p = InStr(2, ln, "（")
+        Do While p > 0
+            ' 対応する閉じ括弧を探す（入れ子の括弧を数える）
+            depth = 0
+            For q = p To Len(ln)
+                If Mid$(ln, q, 1) = "（" Then depth = depth + 1
+                If Mid$(ln, q, 1) = "）" Then depth = depth - 1
+                If depth = 0 Then Exit For
+            Next q
+            If q > Len(ln) Then Exit Do                  ' 閉じ括弧がない
+            inner = Mid$(ln, p + 1, q - p - 1)
+            If InStr(inner, ChrW(&H3000)) > 0 Or InStr(inner, "：") > 0 Or _
+               InStr(inner, ":") > 0 Or InStr(inner, "、") > 0 Then
+                head = Left$(ln, p - 1)
+                Do While Len(head) > 0 And (Right$(head, 1) = ChrW(&H3000) Or Right$(head, 1) = " ")
+                    head = Left$(head, Len(head) - 1)
+                Loop
+                If head <> "" Then ln = head & vbLf & INDENT & Mid$(ln, p)
+                Exit Do
+            End If
+            p = InStr(q + 1, ln, "（")
+        Loop
+        lines(i) = ln
+    Next i
+    BreakBeforeDetail = Join(lines, vbLf)
+End Function
+
 ' 校外行事欄（D4:D8）で全角スペースを消さないようにする
 '  元の数式： =IF(K13="","",SUBSTITUTE(K13,"　","")&CHAR(10))&IF(J4="","",J4)
 '  変更後　： =IF(K13="","",K13&CHAR(10))&IF(J4="","",J4)
@@ -486,6 +528,10 @@ End Sub
 '  ・「＊」がないキーワードは、そのまま編集後の文字列に置き換える
 '  ・キーワードは行事名の先頭から一致したものだけが対象（「代表委員会」は「委員会＊」に一致しない）
 '  ・すでに編集済みのものは二重に付け足さない
+'  ・「編集後」が空欄のキーワードは何もしない
+'  ・「編集後」の中の全角スペースは、行事の区切り（〇に置き換わる）と区別するため
+'    同じ幅の別の空白文字（EM SPACE）にして書き込む → 〇が付かずにそのまま表示される
+'  ・編集するのはその週（J13:J19）だけ。今後の予定（D11）は編集しない
 '===============================================================================
 
 ' 表示中の週シートに、追加情報をもう一度反映する（追加情報シートを直したあとなど）
@@ -510,7 +556,8 @@ Public Sub 追加情報反映()
     MsgBox "校内行事を " & n & " か所編集しました。", vbInformation, "週報作成"
 End Sub
 
-' 週シートの校内行事（J13:J43）に追加情報を反映し、編集した数を返す
+' 週シートのその週の校内行事（J13:J19）に追加情報を反映し、編集した数を返す
+'   今後の予定（D11、J20 以降が元）は編集しない
 Private Function ApplyExtraInfo(ByVal ws As Worksheet) As Long
     Dim wsX As Worksheet
     Set wsX = FindSheet(ThisWorkbook, SHEET_EXTRA)
@@ -525,7 +572,7 @@ Private Function ApplyExtraInfo(ByVal ws As Worksheet) As Long
     For r = 1 To lastRow
         Dim k As String
         k = Trim$(CStr(wsX.Cells(r, "A").Value))
-        If k <> "" And k <> "キーワード" Then
+        If k <> "" And k <> "キーワード" And CStr(wsX.Cells(r, "B").Value) <> "" Then
             nRule = nRule + 1
             keys(nRule) = k
             edits(nRule) = CStr(wsX.Cells(r, "B").Value)
@@ -535,7 +582,7 @@ Private Function ApplyExtraInfo(ByVal ws As Worksheet) As Long
 
     ' 校内行事の各セルに順に当てはめる
     Dim i As Long, t As String, cnt As Long, total As Long
-    For r = FIRST_ROW To FIRST_ROW + DAYS_TO_COPY - 1
+    For r = FIRST_ROW To FIRST_ROW + 6                     ' その週の7日分だけ
         t = CStr(ws.Cells(r, "J").Value)
         If t <> "" Then
             cnt = 0
@@ -557,6 +604,9 @@ Public Function ApplyOneRule(ByVal t As String, ByVal keyWord As String, ByVal e
     Const STAR As String = "＊"
     keyWord = Replace(keyWord, "*", STAR)
     edited = Replace(edited, "*", STAR)
+    If edited = "" Then ApplyOneRule = t: Exit Function     ' 編集後が空欄なら何もしない
+    ' 編集後の中の全角スペースは EM SPACE（同じ幅の空白）にして、区切りとして扱われないようにする
+    edited = Replace(edited, ChrW(&H3000), ChrW(&H2003))
 
     Dim wild As Boolean, kPre As String, kPost As String, ePre As String, ePost As String
     Dim sp As Long
@@ -689,7 +739,38 @@ Private Sub FitRowHeights(ByVal ws As Worksheet)
     tmp.Delete
     Application.DisplayAlerts = True
     ws.Activate
+
+    ' 行の高さが変わっても画像（QR コードなど）が原本と同じセルの位置に来るようにする
+    If Not wsGen Is Nothing Then AlignShapesToGenpon ws, wsGen
 End Sub
+
+' 原本の図形と同じ名前の図形を、原本と同じセルからの位置へ置き直す
+'   （原本の画像は「セルに合わせて移動しない」設定のため、行が高くなると下の行に重なる）
+Private Sub AlignShapesToGenpon(ByVal ws As Worksheet, ByVal wsGen As Worksheet)
+    Dim gs As Shape, s As Shape, r As Long, offset As Double
+    On Error Resume Next                     ' 見た目だけの調整なので、失敗しても作成は続ける
+    For Each gs In wsGen.Shapes
+        Set s = Nothing
+        Set s = ws.Shapes(gs.Name)
+        If Not s Is Nothing Then
+            r = RowAtTop(wsGen, gs.Top)              ' 原本で図形の上端がある行
+            offset = gs.Top - wsGen.Rows(r).Top
+            s.Top = ws.Rows(r).Top + offset
+        End If
+    Next gs
+    On Error GoTo 0
+End Sub
+
+' 上端の位置 y（ポイント）が含まれる行の番号
+Private Function RowAtTop(ByVal ws As Worksheet, ByVal y As Double) As Long
+    Dim r As Long
+    r = 1
+    Do While r < 1000
+        If ws.Rows(r + 1).Top > y Then Exit Do
+        r = r + 1
+    Loop
+    RowAtTop = r
+End Function
 
 Private Sub FitOneRow(ByVal ws As Worksheet, ByVal wsGen As Worksheet, ByVal tmp As Worksheet, _
                       ByVal r As Long, ByVal cols As Variant)

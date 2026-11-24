@@ -202,7 +202,7 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
         If Application.WorksheetFunction.CountA(ws.Range("G13:L43")) > 0 Then
             If MsgBox("「" & ws.Name & "」シートにはすでにデータがあります。" & vbLf & _
                       "行事予定から読み直して上書きしますか？" & vbLf & _
-                      "（G13:L43 の貼付データだけを書き換えます。お知らせ欄などはそのままです）", _
+                      "（G13:L43 の貼付データと、お知らせ欄の「行事・教育課程の反省」の一覧を書き換えます）", _
                       vbYesNo + vbQuestion, "週報作成") <> vbYes Then Exit Function
         End If
     End If
@@ -243,6 +243,7 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
     ' 「追加情報」シートのキーワードで校内行事を編集する（シートがなければ何もしない）
     Dim nReplaced As Long
     nReplaced = ApplyExtraInfo(ws)
+    WriteReflectionList ws               ' A11 の反省欄にその週の主な行事を書き出す
 
     If TIDY_SCHEDULE Then TidyScheduleFormulas ws
     KeepOutsideSpaces ws
@@ -465,6 +466,83 @@ Private Sub MergeWeekendRows(ByVal ws As Worksheet)
     Next r
 End Sub
 
+' A11「※行事・教育課程の反省＞＞＞」の下に、その週の主な校内行事を「〇」付きで1行ずつ書き出す
+'   ・その週（J13:J19）の校内行事を全角スペース・改行で区切って1つずつ取り出す
+'   ・「＊」で始まる補足、祝日（「国民の祝日」シートの名前と「振替休日」）、重複は書き出さない
+'   ・行事名の途中の「＊」以降（補足）は省く
+'   ・見出しの下にある空白だけの行（と、前に書き出した行）を置き換える。ほかの部分はそのまま
+Private Sub WriteReflectionList(ByVal ws As Worksheet)
+    Const HEADING As String = "※行事・教育課程の反省"
+    Const PREFIX As String = "　〇"          ' 行頭（字下げ＋〇）
+    Dim txt As String, lines As Variant, i As Long, hi As Long, j As Long
+    txt = CStr(ws.Range("A11").Value)
+    If txt = "" Then Exit Sub
+    txt = Replace(txt, vbCrLf, vbLf)
+    lines = Split(txt, vbLf)
+    hi = -1
+    For i = LBound(lines) To UBound(lines)
+        If Left$(lines(i), Len(HEADING)) = HEADING Then hi = i: Exit For
+    Next i
+    If hi < 0 Then Exit Sub                  ' 見出しがなければ何もしない
+
+    ' 見出しの下の、空白だけの行と前に書き出した行を飛ばした位置 j
+    j = hi + 1
+    Do While j <= UBound(lines)
+        If Trim$(Replace(lines(j), ChrW(&H3000), "")) <> "" And Left$(lines(j), Len(PREFIX)) <> PREFIX Then Exit Do
+        j = j + 1
+    Loop
+
+    ' その週の主な校内行事
+    Dim holidays As String, r As Long, parts As Variant, k As Long, it As String
+    Dim listText As String, seen As String
+    holidays = HolidayNames()
+    For r = FIRST_ROW To FIRST_ROW + 6
+        parts = Split(Replace(CStr(ws.Cells(r, "J").Value), vbLf, ChrW(&H3000)), ChrW(&H3000))
+        For k = LBound(parts) To UBound(parts)
+            it = parts(k)
+            If InStr(2, it, "＊") > 0 Then it = Left$(it, InStr(2, it, "＊") - 1)   ' 「＊」以降の補足は省く
+            it = Trim$(it)
+            If it <> "" And it <> "0" Then
+                If Left$(it, 1) <> "＊" And Left$(it, 1) <> "*" _
+                   And InStr(holidays, vbTab & it & vbTab) = 0 _
+                   And InStr(seen, vbTab & it & vbTab) = 0 Then
+                    seen = seen & vbTab & it & vbTab
+                    listText = listText & PREFIX & it & vbLf
+                End If
+            End If
+        Next k
+    Next r
+
+    ' 組み立て直す：見出しまで ＋ 行事一覧 ＋ 空行 ＋ 残り
+    Dim out As String
+    For i = LBound(lines) To hi
+        out = out & lines(i) & vbLf
+    Next i
+    out = out & listText
+    If j <= UBound(lines) Then
+        out = out & vbLf                     ' 次の見出しとの間を1行あける
+        For i = j To UBound(lines)
+            out = out & lines(i)
+            If i < UBound(lines) Then out = out & vbLf
+        Next i
+    End If
+    ws.Range("A11").Value = out
+End Sub
+
+' 「国民の祝日」シートの祝日名と「振替休日」を、タブで区切った1つの文字列で返す
+Private Function HolidayNames() As String
+    Dim wsH As Worksheet, r As Long, s As String, v As String
+    s = vbTab & "振替休日" & vbTab
+    Set wsH = FindSheet(ThisWorkbook, "国民の祝日")
+    If Not wsH Is Nothing Then
+        For r = 2 To 100
+            v = Trim$(CStr(wsH.Cells(r, "A").Value))
+            If v <> "" Then s = s & v & vbTab
+        Next r
+    End If
+    HolidayNames = s
+End Function
+
 ' 校外行事：詳細を表す「（…）」の前で改行する（各行の最初の該当する括弧だけ）
 '   例：第１３回共同実施（１３：３０　新島小　池林）
 '    → 第１３回共同実施
@@ -551,7 +629,8 @@ Public Sub 追加情報反映()
     Set ws = ActiveSheet
     Application.ScreenUpdating = False
     n = ApplyExtraInfo(ws)
-    If n > 0 Then FitRowHeights ws
+    WriteReflectionList ws
+    FitRowHeights ws
     Application.ScreenUpdating = True
     MsgBox "校内行事を " & n & " か所編集しました。", vbInformation, "週報作成"
 End Sub
@@ -733,7 +812,7 @@ Private Sub FitRowHeights(ByVal ws As Worksheet)
     For r = 9 To 10                          ' 土日（C:E は結合セル）
         FitOneRow ws, wsGen, tmp, r, Array("A", "B", "C")
     Next r
-    FitOneRow ws, wsGen, tmp, 11, Array("D")
+    FitOneRow ws, wsGen, tmp, 11, Array("A", "D")
 
     Application.DisplayAlerts = False
     tmp.Delete

@@ -233,7 +233,7 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
             Dim sr As Long
             sr = SRC_FIRST_ROW + Day(d) - 1
             ws.Cells(r, "I").Value = CleanText(wsM.Cells(sr, "C"))   ' 日直
-            ws.Cells(r, "J").Value = CleanText(wsM.Cells(sr, "D"))   ' 校内行事
+            ws.Cells(r, "J").Value = TidySeparators(CleanText(wsM.Cells(sr, "D")))   ' 校内行事
             ws.Cells(r, "K").Value = BreakBeforeDetail(CleanText(wsM.Cells(sr, "E")))   ' 校外行事
             ws.Cells(r, "L").Value = CleanText(wsM.Cells(sr, "F"))   ' 提出文書・備考
         End If
@@ -425,20 +425,45 @@ End Function
 
 ' 今後の予定（F20:F43 → G11 → D11）で、校内行事のない日を表示しないようにする
 Private Sub TidyScheduleFormulas(ByVal ws As Worksheet)
-    Dim r As Long, parts As String
+    Dim r As Long, parts As String, fw As String
+    fw = ChrW(&H3000)                        ' 全角スペース
     For r = 20 To 43
         ' 日付が1桁なら前に半角スペースを入れて、2桁の日付と「(」の位置をそろえる
-        ws.Range("F" & r).Formula = "=IF(J" & r & "="""","""",IF(G" & r & "<10,"" "","""")&G" & r & "&""(""&H" & r & _
-            "&"")" & ChrW(&H3000) & ChrW(&H3007) & """&SUBSTITUTE(J" & r & ",""" & ChrW(&H3000) & _
-            """,CHAR(10)&""" & ChrW(&H3007) & """))"
+        ' 行事は「〇」を付けて改行で区切る。「＊」で始まる行事には「〇」を付けない
+        ws.Range("F" & r).Formula = "=IF(J" & r & "="""","""",IF(G" & r & "<10,"" "","""")&G" & r & _
+            "&""(""&H" & r & "&"")" & fw & """&" & ScheduleExpr("J" & r) & ")"
         If r <= 30 Then
-            parts = parts & ",SUBSTITUTE(F" & r & ",CHAR(10),"""")"
+            ' 1行につなげる日は、改行を全角スペースにして「〇A　〇B」のように区切る
+            parts = parts & ",SUBSTITUTE(F" & r & ",CHAR(10),""" & fw & """)"
         Else
             parts = parts & ",F" & r
         End If
     Next r
     ws.Range("G11").Formula = "=TEXTJOIN(CHAR(10),TRUE" & parts & ")"
 End Sub
+
+' 今後の予定用：校内行事のセル（J列）の各行事に「〇」を付けて改行で区切る式（「＊」の前には付けない）
+Private Function ScheduleExpr(ByVal ref As String) As String
+    ScheduleExpr = "SUBSTITUTE(""〇""&SUBSTITUTE(" & ref & ",""" & ChrW(&H3000) & """,CHAR(10)&""〇""),""〇＊"",""＊"")"
+End Function
+
+' 校内行事の区切り（全角スペース）を整える：続いたものは1つに、先頭・末尾のものと改行は取る
+Private Function TidySeparators(ByVal t As String) As String
+    Dim fw As String
+    fw = ChrW(&H3000)
+    Do While InStr(t, fw & fw) > 0
+        t = Replace(t, fw & fw, fw)
+    Loop
+    t = Replace(t, fw & vbLf, vbLf)
+    t = Replace(t, vbLf & fw, vbLf)
+    Do While Len(t) > 0 And (Left$(t, 1) = fw Or Left$(t, 1) = vbLf)
+        t = Mid$(t, 2)
+    Loop
+    Do While Len(t) > 0 And (Right$(t, 1) = fw Or Right$(t, 1) = vbLf)
+        t = Left$(t, Len(t) - 1)
+    Loop
+    TidySeparators = t
+End Function
 
 ' 校内行事欄（C4:C8）：「〇」の行事と「＊」の補足を1つずつ改行して表示する
 '   元の数式： =IF(J13="","","〇"&SUBSTITUTE(J13,"　","〇")&CHAR(10))&IF(I4="","","○"&I4)

@@ -514,19 +514,57 @@ Private Sub WriteReflectionList(ByVal ws As Worksheet)
     Next r
 
     ' 組み立て直す：見出しまで ＋ 行事一覧 ＋ 空行 ＋ 残り
+    '   残す行の書式（太字・サイズ・色など）を覚えておき、書き込んだあとに付け直す
+    '   （.Value で書き込むと「【特別日課】」の太字などの部分的な書式が消えるため）
+    Dim n As Long, oldPos() As Long, newPos() As Long, keep() As Boolean, pos As Long
+    n = UBound(lines)
+    ReDim oldPos(0 To n): ReDim newPos(0 To n): ReDim keep(0 To n)
+    pos = 1
+    For i = 0 To n
+        oldPos(i) = pos
+        pos = pos + Len(lines(i)) + 1
+    Next i
+
     Dim out As String
     For i = LBound(lines) To hi
+        newPos(i) = Len(out) + 1: keep(i) = True
         out = out & lines(i) & vbLf
     Next i
     out = out & listText
     If j <= UBound(lines) Then
         out = out & vbLf                     ' 次の見出しとの間を1行あける
         For i = j To UBound(lines)
+            newPos(i) = Len(out) + 1: keep(i) = True
             out = out & lines(i)
             If i < UBound(lines) Then out = out & vbLf
         Next i
     End If
+
+    ' 残す行の、先頭の文字の書式を記録
+    Dim fB() As Variant, fI() As Variant, fS() As Variant, fC() As Variant, fN() As Variant, fU() As Variant
+    ReDim fB(0 To n): ReDim fI(0 To n): ReDim fS(0 To n): ReDim fC(0 To n): ReDim fN(0 To n): ReDim fU(0 To n)
+    On Error Resume Next                     ' 書式の付け直しは見た目だけなので、失敗しても続ける
+    For i = 0 To n
+        If keep(i) And Len(lines(i)) > 0 Then
+            With ws.Range("A11").Characters(oldPos(i), 1).Font
+                fB(i) = .Bold: fI(i) = .Italic: fS(i) = .Size: fC(i) = .Color: fN(i) = .Name: fU(i) = .Underline
+            End With
+        End If
+    Next i
+    On Error GoTo 0
+
     ws.Range("A11").Value = out
+
+    ' 書式を付け直す（行事一覧の行は、書き込んだときの基本の書式のまま）
+    On Error Resume Next
+    For i = 0 To n
+        If keep(i) And Len(lines(i)) > 0 Then
+            With ws.Range("A11").Characters(newPos(i), Len(lines(i))).Font
+                .Bold = fB(i): .Italic = fI(i): .Size = fS(i): .Color = fC(i): .Name = fN(i): .Underline = fU(i)
+            End With
+        End If
+    Next i
+    On Error GoTo 0
 End Sub
 
 ' 「国民の祝日」シートの祝日名と「振替休日」を、タブで区切った1つの文字列で返す
@@ -871,10 +909,18 @@ Private Function FitOneCell(ByVal cell As Range, ByVal wsGen As Worksheet, ByVal
     Set topCell = area.Cells(1, 1)
 
     ' フォントサイズは原本のサイズから測り直す（作り直したときに小さいままにならないように）
-    Dim size As Double
-    size = topCell.Font.Size
-    If Not wsGen Is Nothing Then size = wsGen.Range(topCell.Address).Font.Size
-    If area.Font.Size <> size Then area.Font.Size = size
+    ' ただし、文字ごとにサイズなどが違うセル（A11 のお知らせ欄など）は、Font.Size が Null になる。
+    ' そのセルは先頭の文字のサイズで測り、部分的な書式を崩さないようにフォントは変えない。
+    Dim size As Double, fs As Variant, mixed As Boolean
+    fs = topCell.Font.Size
+    If Not wsGen Is Nothing Then fs = wsGen.Range(topCell.Address).Font.Size
+    mixed = IsNull(fs) Or IsNull(area.Font.Size)
+    If mixed Then
+        size = topCell.Characters(1, 1).Font.Size
+    Else
+        size = fs
+        If area.Font.Size <> size Then area.Font.Size = size
+    End If
 
     v = topCell.Value
     If IsError(v) Then Exit Function
@@ -892,9 +938,9 @@ Private Function FitOneCell(ByVal cell As Range, ByVal wsGen As Worksheet, ByVal
         .NumberFormat = "@"
         .Value = txt
         .WrapText = True
-        .Font.Name = topCell.Font.Name
-        .Font.Bold = topCell.Font.Bold
-        .Font.Italic = topCell.Font.Italic
+        .Font.Name = topCell.Characters(1, 1).Font.Name      ' 先頭の文字の書式（Null にならない）
+        .Font.Bold = topCell.Characters(1, 1).Font.Bold
+        .Font.Italic = topCell.Characters(1, 1).Font.Italic
     End With
 
     Dim h As Double
@@ -907,10 +953,13 @@ Private Function FitOneCell(ByVal cell As Range, ByVal wsGen As Worksheet, ByVal
         tmp.Rows(1).AutoFit
         h = tmp.Rows(1).RowHeight * HEIGHT_MARGIN + 2
         ' 余裕を含めて上限（から1ポイント以内）に届くなら入りきっていない → 小さくする
-        If h < MAX_ROW_HEIGHT - 1 Or size <= MIN_FONT_SIZE Then Exit Do
+        ' （書式が混ざったセルは縮小しない）
+        If mixed Or h < MAX_ROW_HEIGHT - 1 Or size <= MIN_FONT_SIZE Then Exit Do
         size = size - 0.5
     Loop
-    If area.Font.Size <> size Then area.Font.Size = size
+    If Not mixed Then
+        If area.Font.Size <> size Then area.Font.Size = size
+    End If
     FitOneCell = h
 End Function
 

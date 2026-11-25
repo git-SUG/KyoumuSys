@@ -604,6 +604,12 @@ Private Sub WriteWeekCells(ByVal ws As Worksheet, ByVal startDate As Date, ByRef
     Dim preIn As String, preOut As String, preRem As String
     fw = ChrW(&H3000)
 
+    ' A 列の元の文字色（原本のもの）
+    Dim wsGen As Worksheet, baseColor As Long
+    baseColor = ws.Range("A4").Font.Color
+    Set wsGen = FindSheet(ThisWorkbook, SHEET_GENPON)
+    If Not wsGen Is Nothing Then baseColor = wsGen.Range("A4").Font.Color
+
     ' 週の期間（月～金）
     ws.Range("E2").Value = Month(startDate) & "月" & Day(startDate) & "日～" & _
                            Month(startDate + 4) & "月" & Day(startDate + 4) & "日"
@@ -616,6 +622,12 @@ Private Sub WriteWeekCells(ByVal ws As Worksheet, ByVal startDate As Date, ByRef
         preRem = PreEntry(ws, "K", r)
 
         ws.Range("A" & r).Value = Month(d) & "/" & Day(d) & vbLf & duty(i)
+        ' 日直が校外行事の「（　）」内にもいるとき（部分一致を含む）は、A 列の文字を赤にする
+        If DutyInBrackets(duty(i), outside(i) & vbLf & preOut) Then
+            ws.Range("A" & r).Font.Color = RGB(255, 0, 0)
+        Else
+            ws.Range("A" & r).Font.Color = baseColor
+        End If
         ws.Range("B" & r).Value = "(" & WeekdayChar(d) & ")"
 
         If i <= 4 Then                       ' 月～金
@@ -693,6 +705,65 @@ Private Sub StrikeDoneLines(ByVal c As Range)
     Next i
     On Error GoTo 0
 End Sub
+
+' 日直（職員名）が、校外行事の「（…）」「(…)」の中に出てくるか（部分一致を含む）
+'   括弧の中を「、」「・」「，」「：」「／」やスペースで区切り、区切りごとに日直の名前と
+'   一方がもう一方を含んでいれば一致とする（2文字以上。例：「杉山」と「杉山先生」）
+Private Function DutyInBrackets(ByVal duty As String, ByVal outsideText As String) As Boolean
+    Dim name As String, i As Long, j As Long, depth As Long, ch As String, inner As String
+    Dim tokens As Variant, k As Long, tk As String
+    name = NormName(duty)
+    If Len(name) < 2 Then Exit Function
+    i = 1
+    Do While i <= Len(outsideText)
+        ch = Mid$(outsideText, i, 1)
+        If ch = "（" Or ch = "(" Then
+            depth = 0
+            For j = i To Len(outsideText)
+                ch = Mid$(outsideText, j, 1)
+                If ch = "（" Or ch = "(" Then depth = depth + 1
+                If ch = "）" Or ch = ")" Then depth = depth - 1
+                If depth = 0 Then Exit For
+            Next j
+            If j > Len(outsideText) Then j = Len(outsideText)       ' 閉じていなければ最後まで
+            inner = Mid$(outsideText, i + 1, j - i - 1)
+            inner = Replace(inner, "、", " "): inner = Replace(inner, "，", " ")
+            inner = Replace(inner, "・", " "): inner = Replace(inner, "：", " ")
+            inner = Replace(inner, ":", " "): inner = Replace(inner, "／", " ")
+            inner = Replace(inner, "/", " "): inner = Replace(inner, ChrW(&H3000), " ")
+            inner = Replace(inner, ChrW(&H2003), " ")
+            tokens = Split(inner, " ")
+            For k = LBound(tokens) To UBound(tokens)
+                tk = NormName(CStr(tokens(k)))
+                If Len(tk) >= 2 Then
+                    If InStr(tk, name) > 0 Or InStr(name, tk) > 0 Then DutyInBrackets = True: Exit Function
+                End If
+            Next k
+            i = j
+        End If
+        i = i + 1
+    Loop
+End Function
+
+' 名前の比較用：空白と異体字セレクタを取り、全角を半角にそろえる
+Private Function NormName(ByVal t As String) As String
+    Dim i As Long, c As Long, out As String
+    t = Replace(t, ChrW(&H3000), "")
+    t = Replace(t, " ", "")
+    t = Replace(t, vbLf, "")
+    For i = 1 To Len(t)
+        c = AscW(Mid$(t, i, 1))
+        If c < 0 Then c = c + 65536
+        If c >= &HFE00& And c <= &HFE0F& Then
+            ' 異体字セレクタ（VS1～16）は飛ばす
+        ElseIf c = &HDB40& Then
+            i = i + 1                        ' 異体字セレクタ（VS17～256）はサロゲートペアなので2文字飛ばす
+        Else
+            out = out & Mid$(t, i, 1)
+        End If
+    Next i
+    NormName = StrConv(out, vbNarrow)
+End Function
 
 ' 空でない文字列だけを改行でつなぐ
 Private Function JoinLine(ByVal a As String, ByVal b As String) As String

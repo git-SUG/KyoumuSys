@@ -6,7 +6,9 @@ Option Explicit
 '  「年間行事予定（月別のワークシート）」ブックの ４月～３月 シートから、
 '  指定した週の月曜日から31日分の
 '     日直（C列）・校内行事（D列）・校外行事（E列）・提出文書・備考（F列）
-'  を読み取り、週報シート（「原本」のコピー）の G13:L43 に書き込みます。
+'  を読み取り、週報シート（「原本」のコピー）の A4:E10（月～日の行事欄）と
+'  D11（今後の予定）、E2（週の期間）に直接書き込みます。
+'  （F～L 列の貼付データ G13:L43 は使いません。）
 '  月をまたぐ週でも自動で次の月のシートから読み取ります。
 '
 '  使い方：Alt+F8 →「週報作成」→ 実行
@@ -19,8 +21,8 @@ Option Explicit
 '----- 設定 -----------------------------------------------------------------
 Private Const SHEET_GENPON As String = "原本"     ' 週報のひな形シート
 Private Const SHEET_EXTRA As String = "追加情報"  ' 校内行事を編集するキーワード表（A列：キーワード、B列：編集後）
-Private Const DAYS_TO_COPY As Long = 31           ' 転記する日数（G13:L43 = 31行）
-Private Const FIRST_ROW As Long = 13              ' 転記先の先頭行
+Private Const DAYS_TO_COPY As Long = 31           ' 読み取る日数（月曜日から31日分）
+Private Const WEEK_DAYS As Long = 7               ' 週報の行事欄にする日数（月～日）
 Private Const SRC_FIRST_ROW As Long = 3           ' 月シートで「1日」がある行
 Private Const TIDY_SCHEDULE As Boolean = True     ' 今後の予定欄(D11)で行事のない日を省く
 Private Const NAME_SRC_PATH As String = "週報作成_行事予定パス"
@@ -199,10 +201,10 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
         ws.Name = CStr(weekNo)
         ws.Visible = xlSheetVisible
     ElseIf askOverwrite Then
-        If Application.WorksheetFunction.CountA(ws.Range("G13:L43")) > 0 Then
+        If IsFilledSheet(ws) Then
             If MsgBox("「" & ws.Name & "」シートにはすでにデータがあります。" & vbLf & _
                       "行事予定から読み直して上書きしますか？" & vbLf & _
-                      "（G13:L43 の貼付データと、お知らせ欄の「行事・教育課程の反省」の一覧を書き換えます）", _
+                      "（A4:E10・D11・E2 と、お知らせ欄の「行事・教育課程の反省」の一覧を書き換えます）", _
                       vbYesNo + vbQuestion, "週報作成") <> vbYes Then Exit Function
         End If
     End If
@@ -215,11 +217,13 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
     ws.Range("F13").ClearContents
     ws.Range("F13").Value = startDate
 
-    ' 31日分を転記
-    Dim i As Long, d As Date, r As Long, wsM As Worksheet, curMonth As Long
+    ' 31日分を行事予定ブックから読み取る（週シートの F～L 列は使わない）
+    Dim i As Long, d As Date, wsM As Worksheet, curMonth As Long, sr As Long
     Dim missing As String
+    Dim dayNo(0 To DAYS_TO_COPY - 1) As Long, wdChar(0 To DAYS_TO_COPY - 1) As String
+    Dim duty(0 To DAYS_TO_COPY - 1) As String, inside(0 To DAYS_TO_COPY - 1) As String
+    Dim outside(0 To DAYS_TO_COPY - 1) As String, remark(0 To DAYS_TO_COPY - 1) As String
     curMonth = 0
-    ws.Range("G" & FIRST_ROW & ":L" & FIRST_ROW + DAYS_TO_COPY - 1).ClearContents
     For i = 0 To DAYS_TO_COPY - 1
         d = startDate + i
         If Month(d) <> curMonth Then
@@ -227,28 +231,28 @@ Public Function MakeWeeklyReport(ByVal wbSrc As Workbook, ByVal weekNo As Long, 
             Set wsM = MonthSheet(wbSrc, curMonth)
             If wsM Is Nothing Then missing = missing & " " & curMonth & "月"
         End If
-        r = FIRST_ROW + i
-        ws.Cells(r, "G").Value = Day(d)
-        ws.Cells(r, "H").Value = Mid("日月火水木金土", Weekday(d, vbSunday), 1)
+        dayNo(i) = Day(d)
+        wdChar(i) = WeekdayChar(d)
         If Not wsM Is Nothing Then
-            Dim sr As Long
             sr = SRC_FIRST_ROW + Day(d) - 1
-            ws.Cells(r, "I").Value = CleanText(wsM.Cells(sr, "C"))   ' 日直
-            ws.Cells(r, "J").Value = TidySeparators(CleanText(wsM.Cells(sr, "D")))   ' 校内行事
-            ws.Cells(r, "K").Value = BreakBeforeDetail(CleanText(wsM.Cells(sr, "E")))   ' 校外行事
-            ws.Cells(r, "L").Value = CleanText(wsM.Cells(sr, "F"))   ' 提出文書・備考
+            duty(i) = CleanText(wsM.Cells(sr, "C"))                                  ' 日直
+            inside(i) = TidySeparators(CleanText(wsM.Cells(sr, "D")))                ' 校内行事
+            outside(i) = BreakBeforeDetail(CleanText(wsM.Cells(sr, "E")))            ' 校外行事
+            remark(i) = CleanText(wsM.Cells(sr, "F"))                                ' 提出文書・備考
         End If
     Next i
 
     ' 「追加情報」シートのキーワードで校内行事を編集する（シートがなければ何もしない）
-    Dim nReplaced As Long
-    nReplaced = ApplyExtraInfo(ws)
-    WriteReflectionList ws               ' A11 の反省欄にその週の主な行事を書き出す
+    Dim nReplaced As Long, weekInside(0 To WEEK_DAYS - 1) As String
+    nReplaced = ApplyExtraInfoToArray(inside, WEEK_DAYS)
+    For i = 0 To WEEK_DAYS - 1
+        weekInside(i) = inside(i)
+    Next i
 
-    If TIDY_SCHEDULE Then TidyScheduleFormulas ws
-    KeepOutsideSpaces ws
-    SetInsideFormulas ws
-    MergeWeekendRows ws
+    ' 週報の各欄に直接書き込む
+    WriteWeekCells ws, startDate, duty, inside, outside, remark
+    WriteUpcoming ws, dayNo, wdChar, inside
+    WriteReflectionList ws, weekInside    ' A11 の反省欄にその週の主な行事を書き出す
     FitRowHeights ws
 
     Application.ScreenUpdating = True
@@ -319,17 +323,30 @@ Private Function IsThisSchoolYear(ByVal d As Date) As Boolean
     If IsNumeric(y) And Not IsEmpty(y) Then IsThisSchoolYear = (SchoolYear(d) = CLng(y))
 End Function
 
-' 記入済み（G13:L43 にデータがある）週シートのうち、番号が最大のもの
+' 記入済みの週シートのうち、番号が最大のもの
 Private Function LastFilledWeek() As Long
     Dim ws As Worksheet, n As Long
     For Each ws In ThisWorkbook.Worksheets
         If IsNumeric(ws.Name) Then
             n = CLng(ws.Name)
             If n > LastFilledWeek Then
-                If Application.WorksheetFunction.CountA(ws.Range("G13:L43")) > 0 Then LastFilledWeek = n
+                If IsFilledSheet(ws) Then LastFilledWeek = n
             End If
         End If
     Next ws
+End Function
+
+' 週の内容が入っているシートか
+'   ・F13 に日付が値として入っている（このマクロで作った週）
+'   ・または、以前の様式で G13:L43 に貼付データがある
+'   原本のひな形は F13 が数式なので、空とみなす
+Private Function IsFilledSheet(ByVal ws As Worksheet) As Boolean
+    Dim c As Range
+    Set c = ws.Range("F13")
+    If Not c.HasFormula Then
+        If VarType(c.Value) = vbDate Then IsFilledSheet = True: Exit Function
+    End If
+    IsFilledSheet = (Application.WorksheetFunction.CountA(ws.Range("G13:L43")) > 0)
 End Function
 
 Private Function MondayOf(ByVal d As Date) As Date
@@ -424,40 +441,56 @@ Private Function SchoolYear(ByVal d As Date) As Long
     If Month(d) < 4 Then SchoolYear = Year(d) - 1 Else SchoolYear = Year(d)
 End Function
 
-' 今後の予定（F20:F43 → G11 → D11）で、校内行事のない日を表示しないようにする
-Private Sub TidyScheduleFormulas(ByVal ws As Worksheet)
-    Dim r As Long, parts As String, fw As String
+' 今後の予定（8日目以降）の1日分：「 7(月)　〇行事　〇行事」の形（複数の行事は改行で区切る）
+'   日付が1桁なら前に半角スペースを入れて、2桁の日付と「(」の位置をそろえる
+'   行事は「〇」を付けて改行で区切る。「＊」で始まる行事には「〇」を付けない
+Private Function ScheduleLine(ByVal dayNo As Long, ByVal wd As String, ByVal inside As String) As String
+    Dim fw As String
     fw = ChrW(&H3000)                        ' 全角スペース
-    For r = 20 To 43
-        ' 日付が1桁なら前に半角スペースを入れて、2桁の日付と「(」の位置をそろえる
-        ' 行事は「〇」を付けて改行で区切る。「＊」で始まる行事には「〇」を付けない
-        ws.Range("F" & r).Formula = "=IF(J" & r & "="""","""",IF(G" & r & "<10,"" "","""")&G" & r & _
-            "&""(""&H" & r & "&"")" & fw & """&" & ScheduleExpr("J" & r) & ")"
-        If r <= 30 Then
-            ' 1行につなげる日は、改行を全角スペースにして「〇A　〇B」のように区切る
-            parts = parts & ",SUBSTITUTE(F" & r & ",CHAR(10),""" & fw & """)"
-        Else
-            parts = parts & ",F" & r
-        End If
-    Next r
-    ws.Range("G11").Formula = "=TEXTJOIN(CHAR(10),TRUE" & parts & ")"
-End Sub
-
-' 今後の予定用：校内行事のセル（J列）の各行事に「〇」を付けて改行で区切る式
-'   ・「＊」で始まる行事には「〇」を付けない
-'   ・行事名の途中の「＊」は、前に全角スペースを入れる（クラブ③＊… → クラブ③　＊…）
-'   （先頭に改行を1つ付けて「行頭の＊」と「途中の＊」を区別し、最後に MID で取り除く）
-Private Function ScheduleExpr(ByVal ref As String) As String
-    Dim fw As String, x As String
-    fw = ChrW(&H3000)
-    x = "SUBSTITUTE(" & ref & ","" ＊"",""＊"")"                                   ' 「＊」の前の半角スペースを取る
-    x = "CHAR(10)&""〇""&SUBSTITUTE(" & x & ",""" & fw & """,CHAR(10)&""〇"")"    ' 行事ごとに改行＋〇
-    x = "SUBSTITUTE(" & x & ",""〇＊"",""＊"")"                                    ' 「＊」で始まる行事は〇なし
-    x = "SUBSTITUTE(" & x & ",""＊"",""" & fw & "＊"")"                            ' 「＊」の前に全角スペース
-    x = "SUBSTITUTE(" & x & ",CHAR(10)&""" & fw & "＊"",CHAR(10)&""＊"")"         ' 行頭の「＊」は元に戻す
-    ScheduleExpr = "MID(" & x & ",2,32767)"                                        ' 先頭の改行を取る
+    If inside = "" Then Exit Function
+    ScheduleLine = IIf(dayNo < 10, " ", "") & dayNo & "(" & wd & ")" & fw & ScheduleText(inside)
 End Function
 
+' 今後の予定用：校内行事の文字列の各行事に「〇」を付けて改行で区切る
+'   ・「＊」で始まる行事には「〇」を付けない
+'   ・行事名の途中の「＊」は、前に全角スペースを入れる（クラブ③＊… → クラブ③　＊…）
+'   （先頭に改行を1つ付けて「行頭の＊」と「途中の＊」を区別し、最後に取り除く）
+Private Function ScheduleText(ByVal t As String) As String
+    Dim fw As String, x As String
+    fw = ChrW(&H3000)
+    x = Replace(t, " ＊", "＊")                                  ' 「＊」の前の半角スペースを取る
+    x = vbLf & "〇" & Replace(x, fw, vbLf & "〇")                ' 行事ごとに改行＋〇
+    x = Replace(x, "〇＊", "＊")                                 ' 「＊」で始まる行事は〇なし
+    x = Replace(x, "＊", fw & "＊")                              ' 「＊」の前に全角スペース
+    x = Replace(x, vbLf & fw & "＊", vbLf & "＊")                ' 行頭の「＊」は元に戻す
+    ScheduleText = Mid$(x, 2)                                    ' 先頭の改行を取る
+End Function
+
+' D11（今後の予定）：月曜日から8日目以降の行事を書き込む
+'   1行につなげる日（8～18日目）は、改行を全角スペースにして「〇A　〇B」のように区切る
+Private Sub WriteUpcoming(ByVal ws As Worksheet, ByRef dayNo() As Long, ByRef wdChar() As String, _
+                          ByRef inside() As String)
+    Dim i As Long, fw As String, ln As String, out As String
+    fw = ChrW(&H3000)
+    For i = WEEK_DAYS To DAYS_TO_COPY - 1
+        If TIDY_SCHEDULE Then
+            ln = ScheduleLine(dayNo(i), wdChar(i), inside(i))
+            If ln <> "" Then
+                If i <= WEEK_DAYS + 10 Then ln = Replace(ln, vbLf, fw)
+                If out <> "" Then out = out & vbLf
+                out = out & ln
+            End If
+        Else
+            ' 原本の元の表示：行事のない日も書き、行事ごとの改行は取る
+            ln = dayNo(i) & "(" & wdChar(i) & ")" & fw & "〇" & Replace(inside(i), fw, vbLf & "〇")
+            If out <> "" Then out = out & vbLf
+            out = out & Replace(ln, vbLf, "")
+        End If
+    Next i
+    ws.Range("D11").Value = out
+End Sub
+
+' 校内行事の区切り（全角スペース）を整える：続いたものは1つに、先頭・末尾のものと改行は取る
 ' 校内行事の区切り（全角スペース）を整える：続いたものは1つに、先頭・末尾のものと改行は取る
 Private Function TidySeparators(ByVal t As String) As String
     Dim fw As String
@@ -476,59 +509,101 @@ Private Function TidySeparators(ByVal t As String) As String
     TidySeparators = t
 End Function
 
-' 校内行事欄（C4:C8）：「〇」の行事と「＊」の補足を1つずつ改行して表示する
-'   元の数式： =IF(J13="","","〇"&SUBSTITUTE(J13,"　","〇")&CHAR(10))&IF(I4="","","○"&I4)
-'   変更後　： J13 の全角スペースを「改行＋〇」、「＊」を「改行＋＊」に置き換え、
-'              「〇」だけの行（「＊」で始まる補足の前など）と空行を取り除く
-Private Sub SetInsideFormulas(ByVal ws As Worksheet)
-    Dim i As Long
-    For i = 0 To 4                           ' 月～金（土日の行は MergeWeekendRows で作る）
-        ws.Range("C" & (4 + i)).Formula = "=IF(J" & (13 + i) & "="""",""""," & InsideExpr("J" & (13 + i)) & _
-            "&CHAR(10))&IF(I" & (4 + i) & "="""","""",""○""&I" & (4 + i) & ")"
+' 校内行事の文字列を「〇行事」「＊補足」の1行ずつに分ける（末尾の改行はなし）
+'   ・全角スペース（行事の区切り）を「改行＋〇」に、「＊」を「改行＋＊」にする
+'   ・「＊」の前の半角・全角スペースは取ってから改行する
+'   ・「〇」だけの行（「＊」で始まる補足の前など）と空行を取り除く
+Private Function InsideText(ByVal t As String) As String
+    Dim fw As String, x As String
+    fw = ChrW(&H3000)                        ' 全角スペース（行事の区切り）
+    x = Replace(t, " ＊", "＊")
+    x = Replace(x, fw & "＊", "＊")
+    x = Replace(x, "＊", vbLf & "＊")
+    x = Replace(x, fw, vbLf & "〇")
+    x = "〇" & x
+    x = Replace(x, "〇" & vbLf, "")
+    x = Replace(x, vbLf & vbLf, vbLf)
+    InsideText = x
+End Function
+
+' 事前入力内容（G4:K10）の1セルを文字列で返す（空・0・エラーは ""）
+Private Function PreEntry(ByVal ws As Worksheet, ByVal col As String, ByVal r As Long) As String
+    PreEntry = CleanText(ws.Range(col & r))
+End Function
+
+' 週報の A4:E10 と E2 に、1週間（月～日）の内容を直接書き込む
+'   A：月日＋日直、B：曜日、C：校内行事、D：校外行事、E：備考（報告等）
+'   事前入力内容（I4:K10）があれば、C・D・E の末尾に足す（○・〆付き）
+'   土日の行（9・10行目）は、校内行事・校外行事・備考のうち値のあるものを改行でつないで C 列にまとめ、
+'   C:E を結合して左寄せにする
+Private Sub WriteWeekCells(ByVal ws As Worksheet, ByVal startDate As Date, ByRef duty() As String, _
+                           ByRef inside() As String, ByRef outside() As String, ByRef remark() As String)
+    Dim i As Long, r As Long, d As Date, fw As String, s As String
+    Dim preIn As String, preOut As String, preRem As String
+    fw = ChrW(&H3000)
+
+    ' 週の期間（月～金）
+    ws.Range("E2").Value = Month(startDate) & "月" & Day(startDate) & "日～" & _
+                           Month(startDate + 4) & "月" & Day(startDate + 4) & "日"
+
+    For i = 0 To WEEK_DAYS - 1
+        r = 4 + i
+        d = startDate + i
+        preIn = PreEntry(ws, "I", r)
+        preOut = PreEntry(ws, "J", r)
+        preRem = PreEntry(ws, "K", r)
+
+        ws.Range("A" & r).Value = Month(d) & "/" & Day(d) & vbLf & duty(i)
+        ws.Range("B" & r).Value = "(" & WeekdayChar(d) & ")"
+
+        If i <= 4 Then                       ' 月～金
+            s = ""
+            If inside(i) <> "" Then s = InsideText(inside(i)) & vbLf
+            If preIn <> "" Then s = s & "○" & preIn
+            ws.Range("C" & r).Value = s
+
+            s = ""
+            If outside(i) <> "" Then s = outside(i) & vbLf
+            If preOut <> "" Then s = s & preOut
+            ws.Range("D" & r).Value = s
+
+            s = ""
+            If remark(i) <> "" Then s = "〆" & Replace(remark(i), fw, "〆" & fw) & vbLf
+            If preRem <> "" Then s = s & "〆" & preRem
+            ws.Range("E" & r).Value = s
+        Else                                 ' 土日：C:E を結合して1つにまとめる
+            s = ""
+            If inside(i) <> "" Then s = JoinLine(s, InsideText(inside(i)))
+            If preIn <> "" Then s = JoinLine(s, "○" & preIn)
+            s = JoinLine(s, outside(i))
+            s = JoinLine(s, preOut)
+            If remark(i) <> "" Then s = JoinLine(s, "〆" & Replace(remark(i), fw, "〆" & fw))
+            If preRem <> "" Then s = JoinLine(s, "〆" & preRem)
+            With ws.Range("C" & r & ":E" & r)
+                If .MergeCells Then .UnMerge
+                ws.Range("D" & r & ":E" & r).ClearContents
+                ws.Range("C" & r).Value = s
+                .Merge
+                .HorizontalAlignment = xlLeft
+                .VerticalAlignment = xlTop
+                .WrapText = True
+            End With
+        End If
     Next i
 End Sub
 
-' 校内行事のセル（J列）を「〇行事」「＊補足」の1行ずつに分ける式
-Private Function InsideExpr(ByVal ref As String) As String
-    Dim fw As String, inner As String
-    fw = ChrW(&H3000)                        ' 全角スペース（行事の区切り）
-    ' 「＊」の前の半角・全角スペースは取ってから改行する
-    inner = "SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(" & ref & ","" ＊"",""＊""),""" & fw & "＊"",""＊""),""＊"",CHAR(10)&""＊""),""" & fw & """,CHAR(10)&""〇"")"
-    InsideExpr = "SUBSTITUTE(SUBSTITUTE(""〇""&" & inner & ",""〇""&CHAR(10),""""),CHAR(10)&CHAR(10),CHAR(10))"
+' 空でない文字列だけを改行でつなぐ
+Private Function JoinLine(ByVal a As String, ByVal b As String) As String
+    If b = "" Then JoinLine = a: Exit Function
+    If a = "" Then JoinLine = b Else JoinLine = a & vbLf & b
 End Function
 
-' 土日の行（9・10行目）：校内行事・校外行事・備考を C 列にまとめ、C:E を結合して左寄せにする
-'   C9 = 校内行事（〇…、○事前入力）・校外行事（…、事前入力）・備考（〆…、〆事前入力）のうち
-'        値のあるものだけを改行でつないだもの（元の C9・D9・E9 の数式と同じ中身）
-Private Sub MergeWeekendRows(ByVal ws As Worksheet)
-    Dim r As Long, d As Long, fw As String, f As String
-    fw = ChrW(&H3000)                        ' 全角スペース
-    For r = 9 To 10
-        d = r + 9                            ' 貼付データの行（9行目→18行目、10行目→19行目）
-        f = "=TEXTJOIN(CHAR(10),TRUE," & _
-            "IF(J" & d & "="""",""""," & InsideExpr("J" & d) & ")," & _
-            "IF(I" & r & "="""","""",""○""&I" & r & ")," & _
-            "K" & d & ",J" & r & "," & _
-            "IF(L" & d & "="""","""",""〆""&SUBSTITUTE(L" & d & ",""" & fw & """,""〆" & fw & """))," & _
-            "IF(K" & r & "="""","""",""〆""&K" & r & "))"
-        With ws.Range("C" & r & ":E" & r)
-            If .MergeCells Then .UnMerge
-            ws.Range("D" & r & ":E" & r).ClearContents
-            ws.Range("C" & r).Formula = f
-            .Merge
-            .HorizontalAlignment = xlLeft
-            .VerticalAlignment = xlTop
-            .WrapText = True
-        End With
-    Next r
-End Sub
-
 ' A11「※行事・教育課程の反省＞＞＞」の下に、その週の主な校内行事を「〇」付きで1行ずつ書き出す
-'   ・その週（J13:J19）の校内行事を全角スペース・改行で区切って1つずつ取り出す
+'   ・その週（月～日）の校内行事（inside）を全角スペース・改行で区切って1つずつ取り出す
 '   ・「＊」で始まる補足、祝日（「国民の祝日」シートの名前と「振替休日」）、重複は書き出さない
 '   ・行事名の途中の「＊」以降（補足）は省く
 '   ・見出しの下にある空白だけの行（と、前に書き出した行）を置き換える。ほかの部分はそのまま
-Private Sub WriteReflectionList(ByVal ws As Worksheet)
+Private Sub WriteReflectionList(ByVal ws As Worksheet, ByRef inside() As String)
     Const HEADING As String = "※行事・教育課程の反省"
     Const PREFIX As String = "　〇"          ' 行頭（字下げ＋〇）
     Dim txt As String, lines As Variant, i As Long, hi As Long, j As Long
@@ -553,8 +628,8 @@ Private Sub WriteReflectionList(ByVal ws As Worksheet)
     Dim holidays As String, r As Long, parts As Variant, k As Long, it As String
     Dim listText As String, seen As String
     holidays = HolidayNames()
-    For r = FIRST_ROW To FIRST_ROW + 6
-        parts = Split(Replace(CStr(ws.Cells(r, "J").Value), vbLf, ChrW(&H3000)), ChrW(&H3000))
+    For r = LBound(inside) To UBound(inside)
+        parts = Split(Replace(inside(r), vbLf, ChrW(&H3000)), ChrW(&H3000))
         For k = LBound(parts) To UBound(parts)
             it = parts(k)
             If InStr(2, it, "＊") > 0 Then it = Left$(it, InStr(2, it, "＊") - 1)   ' 「＊」以降の補足は省く
@@ -679,17 +754,6 @@ Private Function BreakBeforeDetail(ByVal t As String) As String
     BreakBeforeDetail = Join(lines, vbLf)
 End Function
 
-' 校外行事欄（D4:D8）で全角スペースを消さないようにする
-'  元の数式： =IF(K13="","",SUBSTITUTE(K13,"　","")&CHAR(10))&IF(J4="","",J4)
-'  変更後　： =IF(K13="","",K13&CHAR(10))&IF(J4="","",J4)
-Private Sub KeepOutsideSpaces(ByVal ws As Worksheet)
-    Dim i As Long
-    For i = 0 To 4                           ' 月～金（土日の行は MergeWeekendRows で作る）
-        ws.Range("D" & (4 + i)).Formula = "=IF(K" & (13 + i) & "="""","""",K" & (13 + i) & _
-            "&CHAR(10))&IF(J" & (4 + i) & "="""","""",J" & (4 + i) & ")"
-    Next i
-End Sub
-
 '===============================================================================
 ' 追加情報：校内行事に特定のキーワードがあれば、情報を追加・置き換える
 '
@@ -704,7 +768,8 @@ End Sub
 '  ・「編集後」が空欄のキーワードは何もしない
 '  ・「編集後」の中の全角スペースは、行事の区切り（〇に置き換わる）と区別するため
 '    同じ幅の別の空白文字（EM SPACE）にして書き込む → 〇が付かずにそのまま表示される
-'  ・編集するのはその週（J13:J19）だけ。今後の予定（D11）は編集しない
+'  ・編集するのはその週（月～日）の校内行事だけ。今後の予定（D11）は編集しない
+'  ・追加情報反映（単独実行）は、週シートの C4:C10 の文字を直接置き換える
 '===============================================================================
 
 ' 表示中の週シートに、追加情報をもう一度反映する（追加情報シートを直したあとなど）
@@ -723,28 +788,26 @@ Public Sub 追加情報反映()
     Dim ws As Worksheet, n As Long
     Set ws = ActiveSheet
     Application.ScreenUpdating = False
-    n = ApplyExtraInfo(ws)
-    WriteReflectionList ws
+    n = ApplyExtraInfoToSheet(ws)
+    Dim inside(0 To WEEK_DAYS - 1) As String
+    ReadInsideFromSheet ws, inside
+    WriteReflectionList ws, inside
     FitRowHeights ws
     Application.ScreenUpdating = True
     MsgBox "校内行事を " & n & " か所編集しました。", vbInformation, "週報作成"
 End Sub
 
-' 週シートのその週の校内行事（J13:J19）に追加情報を反映し、編集した数を返す
-'   今後の予定（D11、J20 以降が元）は編集しない
-Private Function ApplyExtraInfo(ByVal ws As Worksheet) As Long
+' 追加情報のキーワード表を読む（戻り値＝有効なキーワードの数）
+Private Function LoadExtraRules(ByRef keys() As String, ByRef edits() As String) As Long
     Dim wsX As Worksheet
     Set wsX = FindSheet(ThisWorkbook, SHEET_EXTRA)
     If wsX Is Nothing Then Exit Function
 
-    ' キーワード表を読む
-    Dim lastRow As Long, r As Long, nRule As Long
-    Dim keys() As String, edits() As String
+    Dim lastRow As Long, r As Long, nRule As Long, k As String
     lastRow = wsX.UsedRange.Row + wsX.UsedRange.Rows.Count - 1
     If lastRow < 1 Then Exit Function
     ReDim keys(1 To lastRow): ReDim edits(1 To lastRow)
     For r = 1 To lastRow
-        Dim k As String
         k = Trim$(CStr(wsX.Cells(r, "A").Value))
         If k <> "" And k <> "キーワード" And CStr(wsX.Cells(r, "B").Value) <> "" Then
             nRule = nRule + 1
@@ -752,25 +815,78 @@ Private Function ApplyExtraInfo(ByVal ws As Worksheet) As Long
             edits(nRule) = CStr(wsX.Cells(r, "B").Value)
         End If
     Next r
+    LoadExtraRules = nRule
+End Function
+
+' 校内行事の文字列の配列（先頭から nDays 日分）に追加情報を反映し、編集した数を返す
+'   今後の予定（8日目以降）は編集しない
+Private Function ApplyExtraInfoToArray(ByRef inside() As String, ByVal nDays As Long) As Long
+    Dim keys() As String, edits() As String, nRule As Long
+    nRule = LoadExtraRules(keys, edits)
     If nRule = 0 Then Exit Function
 
-    ' 校内行事の各セルに順に当てはめる
-    Dim i As Long, t As String, cnt As Long, total As Long
-    For r = FIRST_ROW To FIRST_ROW + 6                     ' その週の7日分だけ
-        t = CStr(ws.Cells(r, "J").Value)
+    Dim i As Long, j As Long, cnt As Long, total As Long, t As String
+    For i = 0 To nDays - 1
+        t = inside(i)
         If t <> "" Then
             cnt = 0
-            For i = 1 To nRule
-                t = ApplyOneRule(t, keys(i), edits(i), cnt)
-            Next i
+            For j = 1 To nRule
+                t = ApplyOneRule(t, keys(j), edits(j), cnt)
+            Next j
             If cnt > 0 Then
-                ws.Cells(r, "J").Value = t
+                inside(i) = t
                 total = total + cnt
             End If
         End If
-    Next r
-    ApplyExtraInfo = total
+    Next i
+    ApplyExtraInfoToArray = total
 End Function
+
+' 週シートの C4:C10 の文字に追加情報を反映し、編集した数を返す（追加情報反映 から使う）
+Private Function ApplyExtraInfoToSheet(ByVal ws As Worksheet) As Long
+    Dim keys() As String, edits() As String, nRule As Long
+    nRule = LoadExtraRules(keys, edits)
+    If nRule = 0 Then Exit Function
+
+    Dim r As Long, j As Long, cnt As Long, total As Long, t As String, v As Variant
+    For r = 4 To 10
+        v = ws.Range("C" & r).Value
+        If Not IsError(v) Then
+            t = CStr(v)
+            If t <> "" Then
+                cnt = 0
+                For j = 1 To nRule
+                    t = ApplyOneRule(t, keys(j), edits(j), cnt)
+                Next j
+                If cnt > 0 Then
+                    ws.Range("C" & r).Value = t
+                    total = total + cnt
+                End If
+            End If
+        End If
+    Next r
+    ApplyExtraInfoToSheet = total
+End Function
+
+' 週シートの C4:C10 から、校内行事（行頭が「〇」の行）を取り出す（反省欄の書き出し用）
+'   行事の区切りは全角スペースにする。行事名の中の全角スペースは同じ幅の別の空白にして区切りと区別する
+Private Sub ReadInsideFromSheet(ByVal ws As Worksheet, ByRef inside() As String)
+    Dim r As Long, lines As Variant, i As Long, out As String, v As Variant
+    For r = 4 To 10
+        v = ws.Range("C" & r).Value
+        out = ""
+        If Not IsError(v) Then
+            lines = Split(Replace(CStr(v), vbCrLf, vbLf), vbLf)
+            For i = LBound(lines) To UBound(lines)
+                If Left$(lines(i), 1) = "〇" Then
+                    If out <> "" Then out = out & ChrW(&H3000)
+                    out = out & Replace(Mid$(lines(i), 2), ChrW(&H3000), ChrW(&H2003))
+                End If
+            Next i
+        End If
+        inside(r - 4) = out
+    Next r
+End Sub
 
 ' 1つのキーワードを文字列 t に当てはめる（編集した数を cnt に足す）
 Public Function ApplyOneRule(ByVal t As String, ByVal keyWord As String, ByVal edited As String, _

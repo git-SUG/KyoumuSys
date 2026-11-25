@@ -650,6 +650,9 @@ Private Sub WriteWeekCells(ByVal ws As Worksheet, ByVal startDate As Date, ByRef
                     End If
                 End If
             End With
+            ' ‘O‚Éj“ú‚¾‚Á‚½ê‡‚É”õ‚¦‚ÄA“h‚è‚Â‚Ô‚µ‚Æ‘¾š‚ğŒ´–{‚Ìó‘Ô‚É–ß‚·
+            ws.Range("A" & r & ":E" & r).Interior.Pattern = xlNone
+            If Not wsGen Is Nothing Then ws.Range("C" & r).Font.Bold = wsGen.Range("C" & r).Font.Bold
             s = ""
             If inside(i) <> "" Then s = InsideText(inside(i)) & vbLf
             If preIn <> "" Then s = s & "›" & preIn
@@ -692,6 +695,13 @@ Private Sub WriteWeekCells(ByVal ws As Worksheet, ByVal startDate As Date, ByRef
                 .VerticalAlignment = xlTop
                 .WrapText = True
             End With
+            If hk > 0 Then
+                ' j“ú‚Ìs‚ÍA“y“ú‚Æ“¯‚¶F‚Å A`E ‚ğ“h‚è‚Â‚Ô‚µAC ‚Ì•¶š‚ğ‘¾š‚É‚·‚é
+                If Not wsGen Is Nothing Then
+                    ws.Range("A" & r & ":E" & r).Interior.Color = wsGen.Range("A9").Interior.Color
+                End If
+                ws.Range("C" & r).Font.Bold = True
+            End If
         End If
     Next i
 End Sub

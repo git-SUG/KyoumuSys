@@ -459,6 +459,10 @@ Private Function ScheduleText(ByVal t As String) As String
     fw = ChrW(&H3000)
     x = Replace(t, " ＊", "＊")                                  ' 「＊」の前の半角スペースを取る
     x = vbLf & "〇" & Replace(x, fw, vbLf & "〇")                ' 行事ごとに改行＋〇
+    x = Replace(x, "〇" & vbLf, "〇")                            ' 「〇」の直後の改行は取る（〇冬季休業…）
+    Do While InStr(x, "〇〇") > 0
+        x = Replace(x, "〇〇", "〇")
+    Loop
     x = Replace(x, "〇＊", "＊")                                 ' 「＊」で始まる行事は〇なし
     x = Replace(x, "＊", fw & "＊")                              ' 「＊」の前に全角スペース
     x = Replace(x, vbLf & fw & "＊", vbLf & "＊")                ' 行頭の「＊」は元に戻す
@@ -520,7 +524,11 @@ Private Function InsideText(ByVal t As String) As String
     x = Replace(x, "＊", vbLf & "＊")
     x = Replace(x, fw, vbLf & "〇")
     x = "〇" & x
-    x = Replace(x, "〇" & vbLf, "")
+    x = Replace(x, "〇" & vbLf, "〇")                            ' 「〇」の直後の改行は取る（〇冬季休業…）
+    Do While InStr(x, "〇〇") > 0
+        x = Replace(x, "〇〇", "〇")
+    Loop
+    x = Replace(x, "〇＊", "＊")                                 ' 「＊」で始まる補足には〇を付けない
     x = Replace(x, vbLf & vbLf, vbLf)
     InsideText = x
 End Function
@@ -567,21 +575,23 @@ Private Sub WriteWeekCells(ByVal ws As Worksheet, ByVal startDate As Date, ByRef
             ws.Range("D" & r).Value = s
 
             s = ""
-            If remark(i) <> "" Then s = "〆" & Replace(remark(i), fw, "〆" & fw) & vbLf
-            If preRem <> "" Then s = s & "〆" & preRem
+            If remark(i) <> "" Then s = RemarkText(remark(i)) & vbLf
+            If preRem <> "" Then s = s & RemarkText(preRem)
             ws.Range("E" & r).Value = s
+            StrikeDoneLines ws.Range("E" & r)
         Else                                 ' 土日：C:E を結合して1つにまとめる
             s = ""
             If inside(i) <> "" Then s = JoinLine(s, InsideText(inside(i)))
             If preIn <> "" Then s = JoinLine(s, "○" & preIn)
             s = JoinLine(s, outside(i))
             s = JoinLine(s, preOut)
-            If remark(i) <> "" Then s = JoinLine(s, "〆" & Replace(remark(i), fw, "〆" & fw))
-            If preRem <> "" Then s = JoinLine(s, "〆" & preRem)
+            If remark(i) <> "" Then s = JoinLine(s, RemarkText(remark(i)))
+            If preRem <> "" Then s = JoinLine(s, RemarkText(preRem))
             With ws.Range("C" & r & ":E" & r)
                 If .MergeCells Then .UnMerge
                 ws.Range("D" & r & ":E" & r).ClearContents
                 ws.Range("C" & r).Value = s
+                StrikeDoneLines ws.Range("C" & r)
                 .Merge
                 .HorizontalAlignment = xlLeft
                 .VerticalAlignment = xlTop
@@ -589,6 +599,44 @@ Private Sub WriteWeekCells(ByVal ws As Worksheet, ByVal startDate As Date, ByRef
             End With
         End If
     Next i
+End Sub
+
+' 備考の文字列：複数あるときは、改行した内容の先頭にも「〆」を付ける（空の行は省く）
+'   全角スペースの前にも「〆」を付ける（従来どおり）
+Private Function RemarkText(ByVal t As String) As String
+    Dim lines As Variant, i As Long, ln As String, out As String, fw As String
+    fw = ChrW(&H3000)
+    lines = Split(Replace(t, vbCrLf, vbLf), vbLf)
+    For i = LBound(lines) To UBound(lines)
+        ln = lines(i)
+        If Trim$(Replace(ln, fw, "")) <> "" Then
+            If Left$(ln, 1) <> "〆" Then ln = "〆" & ln
+            ln = Left$(ln, 1) & Replace(Mid$(ln, 2), fw, "〆" & fw)
+            If out <> "" Then out = out & vbLf
+            out = out & ln
+        End If
+    Next i
+    RemarkText = out
+End Function
+
+' 備考のうち「済」「済み」で終わる行（〆で始まる行）に取り消し線を付ける（見え消し）
+'   書き込み直すときは、まず取り消し線を外してからやり直す
+Private Sub StrikeDoneLines(ByVal c As Range)
+    Dim txt As String, lines As Variant, i As Long, pos As Long, ln As String, t As String
+    On Error Resume Next                     ' 見た目だけなので、失敗しても続ける
+    c.Font.Strikethrough = False
+    txt = CStr(c.Value)
+    lines = Split(txt, vbLf)
+    pos = 1
+    For i = LBound(lines) To UBound(lines)
+        ln = lines(i)
+        t = Trim$(Replace(ln, ChrW(&H3000), " "))
+        If Left$(ln, 1) = "〆" And (Right$(t, 1) = "済" Or Right$(t, 2) = "済み") Then
+            c.Characters(pos, Len(ln)).Font.Strikethrough = True
+        End If
+        pos = pos + Len(ln) + 1
+    Next i
+    On Error GoTo 0
 End Sub
 
 ' 空でない文字列だけを改行でつなぐ
@@ -627,6 +675,8 @@ Private Sub WriteReflectionList(ByVal ws As Worksheet, ByRef inside() As String)
     Dim holidays As String, r As Long, parts As Variant, k As Long, it As String
     Dim listText As String, seen As String
     holidays = HolidayNames()
+    Dim excl() As String, nExcl As Long
+    nExcl = LoadExcludeWords(excl)
     For r = LBound(inside) To UBound(inside)
         parts = Split(Replace(inside(r), vbLf, ChrW(&H3000)), ChrW(&H3000))
         For k = LBound(parts) To UBound(parts)
@@ -636,7 +686,8 @@ Private Sub WriteReflectionList(ByVal ws As Worksheet, ByRef inside() As String)
             If it <> "" And it <> "0" Then
                 If Left$(it, 1) <> "＊" And Left$(it, 1) <> "*" _
                    And InStr(holidays, vbTab & it & vbTab) = 0 _
-                   And InStr(seen, vbTab & it & vbTab) = 0 Then
+                   And InStr(seen, vbTab & it & vbTab) = 0 _
+                   And Not IsExcludedEvent(it, excl, nExcl) Then
                     seen = seen & vbTab & it & vbTab
                     listText = listText & PREFIX & it & vbLf
                 End If
@@ -697,6 +748,29 @@ Private Sub WriteReflectionList(ByVal ws As Worksheet, ByRef inside() As String)
     Next i
     On Error GoTo 0
 End Sub
+
+' 「追加情報」シートの D 列（2行目から）の言葉を返す（反省欄に書かない行事の目印）
+Private Function LoadExcludeWords(ByRef words() As String) As Long
+    Dim wsX As Worksheet, r As Long, lastRow As Long, v As String, n As Long
+    Set wsX = FindSheet(ThisWorkbook, SHEET_EXTRA)
+    If wsX Is Nothing Then Exit Function
+    lastRow = wsX.Cells(wsX.Rows.Count, "D").End(xlUp).Row
+    If lastRow < 2 Then Exit Function
+    ReDim words(1 To lastRow)
+    For r = 2 To lastRow
+        v = Trim$(CStr(wsX.Cells(r, "D").Value))
+        If v <> "" Then n = n + 1: words(n) = v
+    Next r
+    LoadExcludeWords = n
+End Function
+
+' 行事名に除外の言葉を含むか
+Private Function IsExcludedEvent(ByVal it As String, ByRef words() As String, ByVal n As Long) As Boolean
+    Dim i As Long
+    For i = 1 To n
+        If InStr(it, words(i)) > 0 Then IsExcludedEvent = True: Exit Function
+    Next i
+End Function
 
 ' 「国民の祝日」シートの祝日名と「振替休日」を、タブで区切った1つの文字列で返す
 Private Function HolidayNames() As String
@@ -986,13 +1060,15 @@ Private Sub CreateExtraInfoSheet()
     ws.Range("A1").Value = "キーワード"
     ws.Range("B1").Value = "編集後"
     ws.Range("C1").Value = "メモ"
+    ws.Range("D1").Value = "反省欄から除く言葉"
     ws.Range("A2").Value = "ALT＊"
     ws.Range("B2").Value = "ALT＊（②３年③４年④６年⑤５年）"
     ws.Range("C2").Value = "＊は番号（数字・丸数字）。ALT⑥ → ALT⑥（②３年③４年④６年⑤５年）"
-    ws.Range("A1:C1").Font.Bold = True
+    ws.Range("A1:D1").Font.Bold = True
     ws.Columns("A").ColumnWidth = 20
     ws.Columns("B").ColumnWidth = 45
     ws.Columns("C").ColumnWidth = 60
+    ws.Columns("D").ColumnWidth = 30
 End Sub
 
 ' 手で書き足したあとに、表示中の週シートの行の高さだけを調整し直す

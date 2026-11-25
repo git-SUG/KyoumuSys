@@ -471,10 +471,11 @@ End Function
 
 ' 同じ日の2行目以降の字下げ：日付の直後の「〇」の位置にそろえる
 '   「日付(曜)＋全角スペース」は半角スペース8つ分の幅（日付が1桁の日は前に半角スペースを足してある）
-'   ・行頭が「〇」「＊」の行：半角スペース8つ
-'   ・「〇」「＊」が付かない行（行事名の途中の改行）：さらに「〇」1文字分（半角スペース2つ）
+'   2行目以降は、そこからさらに半角スペース2つ分下げる
+'   ・行頭が「〇」「＊」の行：半角スペース10つ（8＋2）
+'   ・「〇」「＊」が付かない行（行事名の途中の改行）：さらに「〇」1文字分（半角スペース2つ）下げて12
 Private Function IndentContinuation(ByVal t As String) As String
-    Const BASE As Long = 8
+    Const BASE As Long = 10
     Dim lines As Variant, i As Long, ch As String
     lines = Split(t, vbLf)
     For i = LBound(lines) + 1 To UBound(lines)

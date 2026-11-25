@@ -469,6 +469,25 @@ Private Function ScheduleText(ByVal t As String) As String
     ScheduleText = Mid$(x, 2)                                    ' 先頭の改行を取る
 End Function
 
+' 同じ日の2行目以降の字下げ：日付の直後の「〇」の位置にそろえる
+'   「日付(曜)＋全角スペース」は半角スペース8つ分の幅（日付が1桁の日は前に半角スペースを足してある）
+'   ・行頭が「〇」「＊」の行：半角スペース8つ
+'   ・「〇」「＊」が付かない行（行事名の途中の改行）：さらに「〇」1文字分（半角スペース2つ）
+Private Function IndentContinuation(ByVal t As String) As String
+    Const BASE As Long = 8
+    Dim lines As Variant, i As Long, ch As String
+    lines = Split(t, vbLf)
+    For i = LBound(lines) + 1 To UBound(lines)
+        ch = Left$(lines(i), 1)
+        If ch = "〇" Or ch = "＊" Then
+            lines(i) = Space$(BASE) & lines(i)
+        Else
+            lines(i) = Space$(BASE + 2) & lines(i)
+        End If
+    Next i
+    IndentContinuation = Join(lines, vbLf)
+End Function
+
 ' D11（今後の予定）：月曜日から8日目以降の行事を書き込む
 '   1行につなげる日（8～18日目）は、改行を全角スペースにして「〇A　〇B」のように区切る
 Private Sub WriteUpcoming(ByVal ws As Worksheet, ByRef dayNo() As Long, ByRef wdChar() As String, _
@@ -479,7 +498,11 @@ Private Sub WriteUpcoming(ByVal ws As Worksheet, ByRef dayNo() As Long, ByRef wd
         If TIDY_SCHEDULE Then
             ln = ScheduleLine(dayNo(i), wdChar(i), inside(i))
             If ln <> "" Then
-                If i <= WEEK_DAYS + 10 Then ln = Replace(ln, vbLf, fw)
+                If i <= WEEK_DAYS + 10 Then
+                    ln = Replace(ln, vbLf, fw)
+                Else
+                    ln = IndentContinuation(ln)
+                End If
                 If out <> "" Then out = out & vbLf
                 out = out & ln
             End If

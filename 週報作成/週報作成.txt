@@ -493,11 +493,41 @@ Private Sub WriteUpcoming(ByVal ws As Worksheet, ByRef dayNo() As Long, ByRef wd
     ws.Range("D11").Value = out
 End Sub
 
-' 校内行事の区切り（全角スペース）を整える：続いたものは1つに、先頭・末尾のものと改行は取る
+' 括弧の中の全角スペースは、行事の区切りではないので、同じ幅の別の空白（EM SPACE）にする
+'   例：冬季休業（12/24 ～　1/5) → 「〇1/5)」と分けて書き出さない
+'   括弧は「（」「(」で開き、「）」「)」で閉じる（閉じていない括弧は何もしない）
+Private Function ProtectBracketSpaces(ByVal t As String) As String
+    Dim i As Long, j As Long, depth As Long, ch As String, inner As String
+    Dim fw As String, em As String
+    fw = ChrW(&H3000): em = ChrW(&H2003)
+    If InStr(t, fw) = 0 Then ProtectBracketSpaces = t: Exit Function
+    i = 1
+    Do While i <= Len(t)
+        ch = Mid$(t, i, 1)
+        If ch = "（" Or ch = "(" Then
+            depth = 0
+            For j = i To Len(t)
+                ch = Mid$(t, j, 1)
+                If ch = "（" Or ch = "(" Then depth = depth + 1
+                If ch = "）" Or ch = ")" Then depth = depth - 1
+                If depth = 0 Then Exit For
+            Next j
+            If j <= Len(t) Then
+                inner = Mid$(t, i, j - i + 1)
+                t = Left$(t, i - 1) & Replace(inner, fw, em) & Mid$(t, j + 1)
+                i = j
+            End If
+        End If
+        i = i + 1
+    Loop
+    ProtectBracketSpaces = t
+End Function
+
 ' 校内行事の区切り（全角スペース）を整える：続いたものは1つに、先頭・末尾のものと改行は取る
 Private Function TidySeparators(ByVal t As String) As String
     Dim fw As String
     fw = ChrW(&H3000)
+    t = ProtectBracketSpaces(t)
     Do While InStr(t, fw & fw) > 0
         t = Replace(t, fw & fw, fw)
     Loop
@@ -767,9 +797,36 @@ End Function
 ' 行事名に除外の言葉を含むか
 Private Function IsExcludedEvent(ByVal it As String, ByRef words() As String, ByVal n As Long) As Boolean
     Dim i As Long
+    Dim t As String, parts As Variant, k As Long, p As Long, pos As Long, ok As Boolean, w As String
+    t = NormForMatch(it)
     For i = 1 To n
-        If InStr(it, words(i)) > 0 Then IsExcludedEvent = True: Exit Function
+        ' 「＊」は任意の文字列。分けた部分が順に含まれていれば一致（部分一致）
+        w = NormForMatch(words(i))
+        If Len(Replace(w, "*", "")) > 0 Then
+            parts = Split(w, "*")
+            pos = 1: ok = True
+            For k = LBound(parts) To UBound(parts)
+                If parts(k) <> "" Then
+                    p = InStr(pos, t, parts(k))
+                    If p = 0 Then ok = False: Exit For
+                    pos = p + Len(parts(k))
+                End If
+            Next k
+            If ok Then IsExcludedEvent = True: Exit Function
+        End If
     Next i
+End Function
+
+' 比べるための文字列：全角を半角に、大文字を小文字にして、空白（全角・EM・半角・改行）を取る
+Private Function NormForMatch(ByVal t As String) As String
+    t = StrConv(t, vbNarrow)
+    t = Replace(t, ChrW(&H3000), "")
+    t = Replace(t, ChrW(&H2003), "")
+    t = Replace(t, " ", "")
+    t = Replace(t, vbTab, "")
+    t = Replace(t, vbCr, "")
+    t = Replace(t, vbLf, "")
+    NormForMatch = LCase$(t)
 End Function
 
 ' 「国民の祝日」シートの祝日名と「振替休日」を、タブで区切った1つの文字列で返す

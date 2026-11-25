@@ -600,9 +600,11 @@ End Function
 '   C:E を結合して左寄せにする
 Private Sub WriteWeekCells(ByVal ws As Worksheet, ByVal startDate As Date, ByRef duty() As String, _
                            ByRef inside() As String, ByRef outside() As String, ByRef remark() As String)
-    Dim i As Long, r As Long, d As Date, fw As String, s As String
+    Dim i As Long, r As Long, d As Date, fw As String, s As String, hk As Long
     Dim preIn As String, preOut As String, preRem As String
+    Dim hName() As String, hDate() As String, hMean() As String, nHol As Long
     fw = ChrW(&H3000)
+    nHol = LoadHolidays(hName, hDate, hMean)
 
     ' A 列の元の文字色（原本のもの）
     Dim wsGen As Worksheet, baseColor As Long
@@ -630,11 +632,29 @@ Private Sub WriteWeekCells(ByVal ws As Worksheet, ByVal startDate As Date, ByRef
         End If
         ws.Range("B" & r).Value = "(" & WeekdayChar(d) & ")"
 
-        If i <= 4 Then                       ' 月～金
+        ' 「国民の祝日」シートの祝日名が校内行事にあるか（部分一致を含む）
+        hk = 0
+        If nHol > 0 Then hk = FindHoliday(inside(i), hName, nHol)
+
+        If i <= 4 And hk = 0 Then            ' 月～金（祝日でない日）：C・D・E を別々に書く
+            With ws.Range("C" & r & ":E" & r)
+                If .MergeCells Then
+                    .UnMerge                 ' 前に祝日で結合していたときは、結合をやめて元の配置に戻す
+                    If Not wsGen Is Nothing Then
+                        ws.Range("C" & r).HorizontalAlignment = wsGen.Range("C" & r).HorizontalAlignment
+                        ws.Range("C" & r).VerticalAlignment = wsGen.Range("C" & r).VerticalAlignment
+                        ws.Range("D" & r).HorizontalAlignment = wsGen.Range("D" & r).HorizontalAlignment
+                        ws.Range("D" & r).VerticalAlignment = wsGen.Range("D" & r).VerticalAlignment
+                        ws.Range("E" & r).HorizontalAlignment = wsGen.Range("E" & r).HorizontalAlignment
+                        ws.Range("E" & r).VerticalAlignment = wsGen.Range("E" & r).VerticalAlignment
+                    End If
+                End If
+            End With
             s = ""
             If inside(i) <> "" Then s = InsideText(inside(i)) & vbLf
             If preIn <> "" Then s = s & "○" & preIn
             ws.Range("C" & r).Value = s
+            ws.Range("C" & r).Font.Strikethrough = False
 
             s = ""
             If outside(i) <> "" Then s = outside(i) & vbLf
@@ -646,9 +666,16 @@ Private Sub WriteWeekCells(ByVal ws As Worksheet, ByVal startDate As Date, ByRef
             If preRem <> "" Then s = s & RemarkText(preRem)
             ws.Range("E" & r).Value = s
             StrikeDoneLines ws.Range("E" & r)
-        Else                                 ' 土日：C:E を結合して1つにまとめる
+        Else                                 ' 土日と祝日：C:E を結合して1つにまとめる
             s = ""
-            If inside(i) <> "" Then s = JoinLine(s, InsideText(inside(i)))
+            Dim rest As String
+            rest = inside(i)
+            If hk > 0 Then
+                ' 祝日名＋改行＋日付＋意味（行事のほかの内容は、その下に続ける）
+                s = hName(hk) & vbLf & hDate(hk) & "『" & hMean(hk) & "』"
+                rest = RemoveHolidayItems(inside(i), hName(hk))
+            End If
+            If rest <> "" Then s = JoinLine(s, InsideText(rest))
             If preIn <> "" Then s = JoinLine(s, "○" & preIn)
             s = JoinLine(s, outside(i))
             s = JoinLine(s, preOut)
@@ -658,6 +685,7 @@ Private Sub WriteWeekCells(ByVal ws As Worksheet, ByVal startDate As Date, ByRef
                 If .MergeCells Then .UnMerge
                 ws.Range("D" & r & ":E" & r).ClearContents
                 ws.Range("C" & r).Value = s
+                ws.Range("C" & r).Font.Strikethrough = False
                 StrikeDoneLines ws.Range("C" & r)
                 .Merge
                 .HorizontalAlignment = xlLeft
@@ -763,6 +791,70 @@ Private Function NormName(ByVal t As String) As String
         End If
     Next i
     NormName = StrConv(out, vbNarrow)
+End Function
+
+' 「国民の祝日」シート（A 祝日名、B 日付、C 意味。2行目から）を読む（戻り値＝件数）
+'   日付が日付の値なら「11月23日」の形に、「1月の第2月曜日」のような文字ならそのまま使う
+Private Function LoadHolidays(ByRef nm() As String, ByRef dt() As String, ByRef mn() As String) As Long
+    Dim wsH As Worksheet, r As Long, lastRow As Long, n As Long, v As Variant
+    Set wsH = FindSheet(ThisWorkbook, "国民の祝日")
+    If wsH Is Nothing Then Exit Function
+    lastRow = wsH.Cells(wsH.Rows.Count, "A").End(xlUp).Row
+    If lastRow < 2 Then Exit Function
+    ReDim nm(1 To lastRow): ReDim dt(1 To lastRow): ReDim mn(1 To lastRow)
+    For r = 2 To lastRow
+        If Trim$(CStr(wsH.Cells(r, "A").Value)) <> "" Then
+            n = n + 1
+            nm(n) = Trim$(CStr(wsH.Cells(r, "A").Value))
+            v = wsH.Cells(r, "B").Value
+            If IsError(v) Then
+                dt(n) = ""
+            ElseIf VarType(v) = vbDate Then
+                dt(n) = Month(v) & "月" & Day(v) & "日"
+            ElseIf IsNumeric(v) And Not IsEmpty(v) Then
+                If v > 20000 And v < 80000 Then dt(n) = Month(CDate(v)) & "月" & Day(CDate(v)) & "日" Else dt(n) = CStr(v)
+            Else
+                dt(n) = CStr(v)
+            End If
+            If IsError(wsH.Cells(r, "C").Value) Then mn(n) = "" Else mn(n) = CStr(wsH.Cells(r, "C").Value)
+        End If
+    Next r
+    LoadHolidays = n
+End Function
+
+' 校内行事の1つの行事が、祝日名に当てはまるか（どちらかがもう一方を含めば一致。「＊」で始まる補足は対象外）
+Private Function IsHolidayItem(ByVal item As String, ByVal holName As String) As Boolean
+    Dim a As String, b As String
+    If Left$(Trim$(item), 1) = "＊" Then Exit Function
+    a = NormForMatch(item): b = NormForMatch(holName)
+    If a = "" Or b = "" Then Exit Function
+    If InStr(a, b) > 0 Then IsHolidayItem = True: Exit Function
+    If Len(a) >= 2 Then IsHolidayItem = (InStr(b, a) > 0)
+End Function
+
+' その日の校内行事に当てはまる祝日の番号（なければ 0）
+Private Function FindHoliday(ByVal inside As String, ByRef nm() As String, ByVal n As Long) As Long
+    Dim items As Variant, i As Long, k As Long
+    If inside = "" Then Exit Function
+    items = Split(Replace(inside, vbLf, ChrW(&H3000)), ChrW(&H3000))
+    For i = LBound(items) To UBound(items)
+        For k = 1 To n
+            If IsHolidayItem(CStr(items(i)), nm(k)) Then FindHoliday = k: Exit Function
+        Next k
+    Next i
+End Function
+
+' 校内行事から、祝日に当てはまる行事を取り除く
+Private Function RemoveHolidayItems(ByVal inside As String, ByVal holName As String) As String
+    Dim items As Variant, i As Long, out As String
+    items = Split(inside, ChrW(&H3000))
+    For i = LBound(items) To UBound(items)
+        If Not IsHolidayItem(CStr(items(i)), holName) Then
+            If out <> "" Then out = out & ChrW(&H3000)
+            out = out & items(i)
+        End If
+    Next i
+    RemoveHolidayItems = out
 End Function
 
 ' 空でない文字列だけを改行でつなぐ
